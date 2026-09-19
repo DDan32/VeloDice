@@ -263,6 +263,7 @@
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "MyApp" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V464YB69BA;
@@ -272,11 +273,11 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MyApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "VeloDice 騎跡";
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "用於連接 XOSS 心率帶、踏頻器與標準藍牙運動感測器以取得即時運動數據。";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "用於在 App 進入背景或螢幕鎖定時持續記錄運動路線與海拔爬升。";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用於在運動過程中即時記錄您的 GPS 軌跡、導航方向、時速與高度。";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "用於將您的去背運動成績卡片與統計圖片儲存至系統相簿。";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "需要藍牙權限以搜尋並連接您的心率帶、踏頻器等運動感測器，在騎行時即時顯示數據。";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "需要藍牙權限以搜尋並連接心率帶與自行車感測設備。";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "需要背景定位權限以在螢幕關閉時持續記錄您的騎行歷程。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "需要定位權限以記錄您的騎行軌跡、速度與導航路徑。";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "需要相簿寫入權限以儲存您的運動去背成績卡片與路線圖。";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "用於選取活動照片並將去背運動成績卡片儲存至系統相簿。";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -309,6 +310,7 @@
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "MyApp" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = V464YB69BA;
@@ -318,11 +320,11 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = MyApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "VeloDice 騎跡";
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "用於連接 XOSS 心率帶、踏頻器與標準藍牙運動感測器以取得即時運動數據。";
-				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "用於在 App 進入背景或螢幕鎖定時持續記錄運動路線與海拔爬升。";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用於在運動過程中即時記錄您的 GPS 軌跡、導航方向、時速與高度。";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "用於將您的去背運動成績卡片與統計圖片儲存至系統相簿。";
+				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "需要藍牙權限以搜尋並連接您的心率帶、踏頻器等運動感測器，在騎行時即時顯示數據。";
+				INFOPLIST_KEY_NSBluetoothPeripheralUsageDescription = "需要藍牙權限以搜尋並連接心率帶與自行車感測設備。";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "需要背景定位權限以在螢幕關閉時持續記錄您的騎行歷程。";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "需要定位權限以記錄您的騎行軌跡、速度與導航路徑。";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "需要相簿寫入權限以儲存您的運動去背成績卡片與路線圖。";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "用於選取活動照片並將去背運動成績卡片儲存至系統相簿。";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
