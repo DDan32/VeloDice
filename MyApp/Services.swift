@@ -967,6 +967,11 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
             
             guard self.state == .recording else { return }
             
+            // 專業碼錶級 GPS 精度安全閘門：
+            // 1. horizontalAccuracy < 0 代表定位無效
+            // 2. horizontalAccuracy > 35.0 代表精度過低（例如進入室內或高樓盲區），必須過濾避免座標暴衝跳躍
+            guard newLoc.horizontalAccuracy >= 0 && newLoc.horizontalAccuracy <= 35.0 else { return }
+            
             self.lastLocationReceivedDate = Date()
             
             // CoreLocation 瞬時速度：< 0 為無效值
@@ -979,6 +984,11 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                 timeDelta = max(0.5, newLoc.timestamp.timeIntervalSince(prev.timestamp))
             }
             let calculatedSpeedKmh = (distMeters / timeDelta) * 3.6
+            
+            // 異常位移過濾（自行車極速防護：排除單車時速不可能達到的 > 120 km/h 瞬移跳點）
+            if distMeters > 30.0 && calculatedSpeedKmh > 120.0 && rawSpeedKmh > 120.0 {
+                return
+            }
             
             // 停下來的嚴格過濾 (排除原地 GPS 漂移與抖動)：
             // 1. rawSpeedKmh < 1.8 km/h (約 0.5 m/s，低於正常騎乘與步行速度)

@@ -955,7 +955,11 @@ public struct MyActivitiesView: View {
                     // Action Buttons (3D Playback & Transparent Share Card)
                     HStack(spacing: 12) {
                         Button {
-                            selectedActivityFor3D = act
+                            let target = act
+                            selectedDetailActivity = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                                selectedActivityFor3D = target
+                            }
                         } label: {
                             HStack {
                                 Image(systemName: "video.fill")
@@ -970,7 +974,11 @@ public struct MyActivitiesView: View {
                         .buttonStyle(.plain)
                         
                         Button {
-                            selectedActivityForShare = act
+                            let target = act
+                            selectedDetailActivity = nil
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                                selectedActivityForShare = target
+                            }
                         } label: {
                             HStack {
                                 Image(systemName: "square.and.arrow.up.fill")

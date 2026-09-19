@@ -56,13 +56,27 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
     private var centralManager: CBCentralManager?
     private var connectedPeripherals: [UUID: CBPeripheral] = [:]
     
-    // Cadence Protocol State tracking
+    // Cadence Protocol State tracking & Coasting Auto-Zero Timer
     private var lastCrankRevs: UInt16? = nil
     private var lastCrankEventTime: UInt16? = nil
+    private var lastCadencePacketDate: Date? = nil
+    private var cadenceWatchdogTimer: Timer? = nil
     
     override public init() {
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: nil)
+        setupCadenceWatchdog()
+    }
+    
+    private func setupCadenceWatchdog() {
+        cadenceWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            if let last = self.lastCadencePacketDate, Date().timeIntervalSince(last) >= 3.0 {
+                if self.liveCadenceRpm != 0 && self.liveCadenceRpm != nil {
+                    self.liveCadenceRpm = 0
+                }
+            }
+        }
     }
     
     // MARK: - User Controls
@@ -193,6 +207,7 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
             if peripheral.name == self.connectedCadenceDeviceName {
                 self.connectedCadenceDeviceName = nil
                 self.liveCadenceRpm = nil
+                self.lastCadencePacketDate = nil
             }
         }
     }
@@ -299,6 +314,7 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
             
             lastCrankRevs = crankRevs
             lastCrankEventTime = eventTime
+            lastCadencePacketDate = Date()
         }
     }
 }

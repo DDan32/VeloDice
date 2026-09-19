@@ -500,7 +500,7 @@ public struct TransparentShareCardView: View {
             UIPasteboard.general.setItems(pasteboardItems, options: pasteboardOptions)
             UIApplication.shared.open(storyURL, options: [:], completionHandler: nil)
         } else {
-            // 未安裝 Instagram 則喚起系統分享面版
+            // 未安裝 Instagram 則喚起系統分享面板
             self.shareSheetItems = [uiImg]
             self.showShareSheet = true
             alertTitle = "未偵測到 Instagram"
@@ -586,7 +586,7 @@ public struct TransparentShareCardView: View {
     }
 }
 
-// MARK: - Route Silhouette Normalized Shape
+// MARK: - Route Silhouette Normalized Shape (100% True-Aspect-Ratio Projection)
 public struct RouteSilhouetteShape: Shape {
     let points: [RoutePoint]
     
@@ -600,24 +600,34 @@ public struct RouteSilhouetteShape: Shape {
         guard let minLat = lats.min(), let maxLat = lats.max(),
               let minLon = lons.min(), let maxLon = lons.max() else { return path }
         
-        let latDelta = max(0.0001, maxLat - minLat)
-        let lonDelta = max(0.0001, maxLon - minLon)
+        let midLatRad = ((minLat + maxLat) / 2.0) * (.pi / 180.0)
+        let cosFactor = max(0.2, cos(midLatRad))
         
-        let usableWidth = rect.width * 0.85
-        let usableHeight = rect.height * 0.85
-        let offsetX = rect.midX - usableWidth / 2.0
-        let offsetY = rect.midY - usableHeight / 2.0
+        let rawLatDelta = max(0.0001, maxLat - minLat)
+        let rawLonDelta = max(0.0001, (maxLon - minLon) * cosFactor)
+        
+        let padding: CGFloat = 16.0
+        let maxAvailableWidth = max(10.0, rect.width - padding * 2)
+        let maxAvailableHeight = max(10.0, rect.height - padding * 2)
+        
+        // Aspect Fit Scale
+        let scale = min(maxAvailableWidth / CGFloat(rawLonDelta), maxAvailableHeight / CGFloat(rawLatDelta))
+        let drawnWidth = CGFloat(rawLonDelta) * scale
+        let drawnHeight = CGFloat(rawLatDelta) * scale
+        
+        let startX = rect.midX - drawnWidth / 2.0
+        let startY = rect.midY - drawnHeight / 2.0
         
         for (i, pt) in points.enumerated() {
-            let normX = (pt.longitude - minLon) / lonDelta
-            let normY = 1.0 - ((pt.latitude - minLat) / latDelta)
-            let x = offsetX + CGFloat(normX) * usableWidth
-            let y = offsetY + CGFloat(normY) * usableHeight
+            let xOffset = CGFloat((pt.longitude - minLon) * cosFactor) * scale
+            let yOffset = CGFloat(maxLat - pt.latitude) * scale
+            let ptX = startX + xOffset
+            let ptY = startY + yOffset
             
             if i == 0 {
-                path.move(to: CGPoint(x: x, y: y))
+                path.move(to: CGPoint(x: ptX, y: ptY))
             } else {
-                path.addLine(to: CGPoint(x: x, y: y))
+                path.addLine(to: CGPoint(x: ptX, y: ptY))
             }
         }
         return path

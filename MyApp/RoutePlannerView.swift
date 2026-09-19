@@ -237,6 +237,14 @@ public struct RoutePlannerView: View {
                 showAlert = true
             }
         }
+        .onAppear {
+            if currentTrack.points.count > 1 {
+                fitMapToCurrentTrack()
+            }
+        }
+        .onChange(of: currentTrack.id) { _ in
+            fitMapToCurrentTrack()
+        }
     }
     
     // MARK: - Minimal Floating Top Route Summary Bar (起點與終點精簡卡片)
@@ -1222,6 +1230,37 @@ public struct RoutePlannerView: View {
         .frame(maxWidth: .infinity)
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+    }
+    
+    // MARK: - Auto Zoom Fit to Current Track
+    private func fitMapToCurrentTrack() {
+        guard currentTrack.points.count > 1 else { return }
+        let lats = currentTrack.points.map(\.latitude)
+        let lons = currentTrack.points.map(\.longitude)
+        guard let minLat = lats.min(), let maxLat = lats.max(),
+              let minLon = lons.min(), let maxLon = lons.max() else { return }
+        
+        let center = CLLocationCoordinate2D(
+            latitude: (minLat + maxLat) / 2.0,
+            longitude: (minLon + maxLon) / 2.0
+        )
+        let span = MKCoordinateSpan(
+            latitudeDelta: max(0.015, (maxLat - minLat) * 1.35),
+            longitudeDelta: max(0.015, (maxLon - minLon) * 1.35)
+        )
+        withAnimation(.easeInOut(duration: 0.45)) {
+            mapPosition = .region(MKCoordinateRegion(center: center, span: span))
+        }
+        
+        // 同步起點與終點標題，若為外來載入的 GPX 或過往活動
+        let cleanTitle = currentTrack.title.trimmingCharacters(in: .whitespaces)
+        if !cleanTitle.isEmpty && cleanTitle != "請輸入目的地開始導航" {
+            if routeStops.count >= 2 {
+                routeStops[routeStops.count - 1].name = cleanTitle
+            } else {
+                routeStops.append(NavigationWaypoint(name: cleanTitle))
+            }
+        }
     }
     
     // MARK: - Real Map Routing Engine with Reordered Stops

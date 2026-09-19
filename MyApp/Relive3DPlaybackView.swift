@@ -199,7 +199,22 @@ public struct Relive3DPlaybackView: View {
     private func currentPointsUpToProgress() -> [RoutePoint] {
         guard !track.points.isEmpty else { return [] }
         let endIdx = min(Int(progress) + 1, track.points.count)
-        var pts = Array(track.points[0..<endIdx])
+        guard endIdx > 0 else { return [] }
+        let slice = track.points[0..<endIdx]
+        
+        var pts: [RoutePoint] = []
+        if slice.count > 120 {
+            let step = max(1, slice.count / 100)
+            for i in stride(from: 0, to: slice.count, by: step) {
+                pts.append(slice[i])
+            }
+            if let last = slice.last, pts.last?.coordinate.latitude != last.coordinate.latitude {
+                pts.append(last)
+            }
+        } else {
+            pts = Array(slice)
+        }
+        
         if let live = currentInterpolatedCoordinate {
             let lastEle = pts.last?.elevation ?? 0
             pts.append(RoutePoint(latitude: live.latitude, longitude: live.longitude, elevation: lastEle))
