@@ -62,6 +62,8 @@ public struct RoutePlannerView: View {
     @State private var showExportShareSheet: Bool = false
     @State private var exportedGPXURL: URL? = nil
     @State private var supplyPoints: [SupplyPoint] = []
+    @State private var isSearchingSupplies: Bool = false
+    @State private var supplySearchTask: Task<Void, Never>? = nil
     @State private var routeCalculationTask: Task<Void, Never>? = nil
     
     // Helpers for Compact Origin & Destination Summary Bar
@@ -216,13 +218,9 @@ public struct RoutePlannerView: View {
                     let data = try Data(contentsOf: url)
                     if let track = GPXParser.parse(data: data), !track.points.isEmpty {
                         self.currentTrack = track
-                        if let first = track.points.first {
-                            mapPosition = .region(MKCoordinateRegion(
-                                center: first.coordinate,
-                                span: MKCoordinateSpan(latitudeDelta: 0.06, longitudeDelta: 0.06)
-                            ))
-                        }
-                        alertMessage = "🎉 已成功匯入規劃路線「\(track.title)」！\n\n• 總里程：\(String(format: "%.1f", track.totalDistanceKm)) km\n• 預估爬升：\(Int(track.totalAscentMeters)) m\n• 平均坡度：\(String(format: "%.1f%%", track.avgGradientPercent))\n\n路線已載入地圖，您可以查閱高程剖面或直接開啟即時記錄進行導航！"
+                        fitMapToCurrentTrack()
+                        searchSuppliesForCurrentTrack()
+                        alertMessage = "🎉 已成功匯入規劃路線「\(track.title)」！\n\n• 總里程：\(String(format: "%.1f", track.totalDistanceKm)) km\n• 預估爬升：\(Int(track.totalAscentMeters)) m\n• 平均坡度：\(String(format: "%.1f%%", track.avgGradientPercent))\n\n路線已載入地圖，並已自動搜尋沿途補給站！"
                         showAlert = true
                     } else {
                         alertMessage = "無法解析該 GPX 路線檔，請確認檔案中包含有效座標點。"
@@ -240,10 +238,16 @@ public struct RoutePlannerView: View {
         .onAppear {
             if currentTrack.points.count > 1 {
                 fitMapToCurrentTrack()
+                if supplyPoints.isEmpty {
+                    searchSuppliesForCurrentTrack()
+                }
             }
         }
         .onChange(of: currentTrack.id) { _ in
             fitMapToCurrentTrack()
+            if !isCalculatingRoute {
+                searchSuppliesForCurrentTrack()
+            }
         }
     }
     
@@ -803,9 +807,10 @@ public struct RoutePlannerView: View {
                 icon: "storefront.fill",
                 tintColor: .orange
             ) {
-                if !supplyPoints.isEmpty {
-                    showSupplySheet = true
-                } else if currentTrack.points.count > 1 {
+                if currentTrack.points.count > 1 {
+                    if supplyPoints.isEmpty && !isSearchingSupplies {
+                        searchSuppliesForCurrentTrack()
+                    }
                     showSupplySheet = true
                 } else {
                     alertMessage = "尚未載入路線，請先設定目的地規劃路線或匯入 GPX，以搜尋沿途補給站。"
@@ -1070,12 +1075,51 @@ public struct RoutePlannerView: View {
         
         return NavigationStack {
             List {
+                // 搜尋狀態與即時進度提示
+                if isSearchingSupplies {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("正在即時搜尋沿途 1200m 補給站（便利商店、加油站、單車店）...")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                } else if supplyPoints.isEmpty && currentTrack.points.count > 1 {
+                    Section {
+                        VStack(spacing: 12) {
+                            Text("尚未搜尋到此路線的沿途補給站")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Button {
+                                searchSuppliesForCurrentTrack()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.clockwise")
+                                    Text("立即搜尋沿途補給點")
+                                }
+                                .font(.subheadline.bold())
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.orange, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                    }
+                }
+                
                 // Section 1: 距離目前位置最近的 5 個補給點（優先便利商店）
                 Section {
                     if nearest5SupplyPoints.isEmpty {
-                        Text("暫無周邊補給點")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        if !isSearchingSupplies {
+                            Text("暫無周邊補給點")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
                     } else {
                         ForEach(nearest5SupplyPoints) { sp in
                             supplyPointRow(sp, isTop5Section: true)
@@ -1097,9 +1141,11 @@ public struct RoutePlannerView: View {
                 Section {
                     let routeSupplies = supplyPoints.filter { !nearest5SupplyPoints.contains($0) }
                     if routeSupplies.isEmpty && nearest5SupplyPoints.isEmpty {
-                        Text("沿途 1000 公尺內暫無更多補給點")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        if !isSearchingSupplies {
+                            Text("沿途 1000 公尺內暫無更多補給點")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
                     } else {
                         ForEach(routeSupplies.isEmpty ? supplyPoints : routeSupplies) { sp in
                             supplyPointRow(sp, isTop5Section: false)
@@ -1121,6 +1167,23 @@ public struct RoutePlannerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("關閉") { showSupplySheet = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        searchSuppliesForCurrentTrack()
+                    } label: {
+                        if isSearchingSupplies {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(isSearchingSupplies || currentTrack.points.count <= 1)
+                }
+            }
+            .onAppear {
+                if supplyPoints.isEmpty && currentTrack.points.count > 1 && !isSearchingSupplies {
+                    searchSuppliesForCurrentTrack()
                 }
             }
         }
@@ -1259,6 +1322,36 @@ public struct RoutePlannerView: View {
                 routeStops[routeStops.count - 1].name = cleanTitle
             } else {
                 routeStops.append(NavigationWaypoint(name: cleanTitle))
+            }
+        }
+    }
+    
+    // MARK: - Auto Search Supply Points Along Any Track (GPX / Imported / Planned)
+    private func searchSuppliesForCurrentTrack() {
+        guard currentTrack.points.count > 1 else {
+            self.supplyPoints = []
+            return
+        }
+        
+        supplySearchTask?.cancel()
+        isSearchingSupplies = true
+        
+        let coords = currentTrack.points.map(\.coordinate)
+        let totalDist = currentTrack.totalDistanceKm
+        let userCoord = tracker.currentUserLocation?.coordinate
+        
+        supplySearchTask = Task {
+            let foundSupplies = await MapRouteService.shared.searchComprehensiveSupplyPoints(
+                routeCoordinates: coords,
+                totalDistanceKm: totalDist,
+                userLocation: userCoord
+            )
+            
+            guard !Task.isCancelled else { return }
+            
+            await MainActor.run {
+                self.supplyPoints = foundSupplies
+                self.isSearchingSupplies = false
             }
         }
     }

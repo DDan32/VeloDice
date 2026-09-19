@@ -453,7 +453,7 @@ public class MapRouteService: ObservableObject {
         }
     }
     
-    /// 搜尋路線沿途補給站（支援 500m/1000m 半徑過濾、5km/10km 間隔採樣、離目前位置最近 5 個優先便利商店）
+    /// 搜尋路線沿途補給站（支援 500m/1200m 半徑過濾、5km/10km 間隔採樣、離目前位置最近 5 個優先便利商店）
     public func searchComprehensiveSupplyPoints(
         routeCoordinates: [CLLocationCoordinate2D],
         totalDistanceKm: Double,
@@ -461,21 +461,21 @@ public class MapRouteService: ObservableObject {
     ) async -> [SupplyPoint] {
         guard !routeCoordinates.isEmpty else { return [] }
         
-        let currentUserCoord = userLocation ?? routeCoordinates.first!
-        let userCLLocation = CLLocation(latitude: currentUserCoord.latitude, longitude: currentUserCoord.longitude)
+        let routeStartCoord = routeCoordinates.first!
+        let userCLLocation: CLLocation? = userLocation.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
         
         // 1. 決定間隔採樣步長：
         // 總距離 50 公里以內 -> 每隔 5 公里
-        // 總距離 50 公里以上 (特別是 100km 以上) -> 每隔 10 公里
+        // 總距離 50 公里以上 -> 每隔 10 公里
         let intervalKm = (totalDistanceKm <= 50.0) ? 5.0 : 10.0
         
-        // 計算累積距離並選取採樣錨點
+        // 計算累積距離並選取採樣錨點（保證所有錨點都在實際路線上）
         var samplingCoordinates: [(coord: CLLocationCoordinate2D, distKm: Double)] = []
         var runningDistKm = 0.0
         var nextTargetKm = 0.0
         
-        // 始終加入起始點/目前位置
-        samplingCoordinates.append((coord: currentUserCoord, distKm: 0.0))
+        // 始終加入路線起始點
+        samplingCoordinates.append((coord: routeStartCoord, distKm: 0.0))
         nextTargetKm += intervalKm
         
         for i in 1..<routeCoordinates.count {
@@ -496,22 +496,20 @@ public class MapRouteService: ObservableObject {
             samplingCoordinates.append((coord: lastCoord, distKm: runningDistKm))
         }
         
-        // 2. 高效並行搜尋：僅選取關鍵 3~4 個沿線採樣點進行並行 MKLocalSearch，極速在 0.4 秒內完成，杜絕網路阻塞
+        // 2. 高效並行搜尋：均勻選取最多 6 個沿線採樣點進行並行 MKLocalSearch，確保涵蓋整條路線
         var rawSupplies: [SupplyPoint] = []
         let selectedAnchors: [(coord: CLLocationCoordinate2D, distKm: Double)] = {
-            if samplingCoordinates.count <= 3 {
+            if samplingCoordinates.count <= 6 {
                 return samplingCoordinates
             }
-            return [
-                samplingCoordinates.first!,
-                samplingCoordinates[samplingCoordinates.count / 3],
-                samplingCoordinates[(samplingCoordinates.count * 2) / 3],
-                samplingCoordinates.last!
-            ]
+            let step = Double(samplingCoordinates.count - 1) / 5.0
+            return (0..<6).map { i in
+                let idx = min(samplingCoordinates.count - 1, Int(round(Double(i) * step)))
+                return samplingCoordinates[idx]
+            }
         }()
         
         let capturedCoords = routeCoordinates
-        let capturedUserLoc = userCLLocation
         
         await withTaskGroup(of: [SupplyPoint].self) { group in
             for anchor in selectedAnchors {
@@ -521,17 +519,17 @@ public class MapRouteService: ObservableObject {
                     req.naturalLanguageQuery = "便利商店"
                     req.region = MKCoordinateRegion(
                         center: anchor.coord,
-                        latitudinalMeters: 2000,
-                        longitudinalMeters: 2000
+                        latitudinalMeters: 3000,
+                        longitudinalMeters: 3000
                     )
                     let search = MKLocalSearch(request: req)
                     if let response = try? await search.start() {
-                        for item in response.mapItems.prefix(6) {
+                        for item in response.mapItems.prefix(10) {
                             let itemCoord = item.placemark.coordinate
                             let distToRoute = Self.distanceToRouteMeters(coord: itemCoord, routeCoordinates: capturedCoords)
-                            if distToRoute <= 1000.0 {
+                            if distToRoute <= 1200.0 {
                                 let itemLoc = CLLocation(latitude: itemCoord.latitude, longitude: itemCoord.longitude)
-                                let distToUser = userCLLocation.distance(from: itemLoc)
+                                let distToUser = userCLLocation?.distance(from: itemLoc)
                                 
                                 let nameLower = (item.name ?? "").lowercased()
                                 let cat: SupplyPoint.SupplyCategory
@@ -583,42 +581,75 @@ public class MapRouteService: ObservableObject {
             }
         }
         
-        // 5. 若搜尋結果較少，提供當前位置周邊便利商店備援
+        // 5. 若沿途搜尋結果較少，針對路線中段進行備援搜尋
         if uniqueSupplies.isEmpty {
+            let centerCoord = routeCoordinates[routeCoordinates.count / 2]
             let req = MKLocalSearch.Request()
             req.naturalLanguageQuery = "便利商店"
-            req.region = MKCoordinateRegion(center: currentUserCoord, latitudinalMeters: 3000, longitudinalMeters: 3000)
+            req.region = MKCoordinateRegion(center: centerCoord, latitudinalMeters: 6000, longitudinalMeters: 6000)
             let fallbackSearch = MKLocalSearch(request: req)
             if let fallbackResp = try? await fallbackSearch.start() {
                 for item in fallbackResp.mapItems {
-                    let dUser = userCLLocation.distance(from: CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude))
-                    uniqueSupplies.append(SupplyPoint(
-                        name: item.name ?? "便利商店",
-                        category: .convenienceStore,
-                        coordinate: item.placemark.coordinate,
-                        distanceFromStartKm: 0.5,
-                        note: "目前位置周邊補給",
-                        distanceToUserMeters: dUser,
-                        distanceToRouteMeters: 50.0,
-                        isNearestTop5: false
-                    ))
+                    let itemCoord = item.placemark.coordinate
+                    let distToRoute = Self.distanceToRouteMeters(coord: itemCoord, routeCoordinates: capturedCoords)
+                    if distToRoute <= 2000.0 {
+                        let itemLoc = CLLocation(latitude: itemCoord.latitude, longitude: itemCoord.longitude)
+                        let dUser = userCLLocation?.distance(from: itemLoc)
+                        uniqueSupplies.append(SupplyPoint(
+                            name: item.name ?? "便利商店",
+                            category: .convenienceStore,
+                            coordinate: itemCoord,
+                            distanceFromStartKm: totalDistanceKm / 2.0,
+                            note: "路線沿線 \(Int(distToRoute))m",
+                            distanceToUserMeters: dUser,
+                            distanceToRouteMeters: distToRoute,
+                            isNearestTop5: false
+                        ))
+                    }
                 }
             }
         }
         
-        // 6. 計算「距離目前位置最近的 5 個補給點，優先便利商店」
+        // 6. 計算「最便捷的 5 個補給點（優先便利商店）」
         let convStores = uniqueSupplies.filter { $0.category == .convenienceStore }
-            .sorted { ($0.distanceToUserMeters ?? .infinity) < ($1.distanceToUserMeters ?? .infinity) }
         let others = uniqueSupplies.filter { $0.category != .convenienceStore }
-            .sorted { ($0.distanceToUserMeters ?? .infinity) < ($1.distanceToUserMeters ?? .infinity) }
+        
+        let userIsNearRoute: Bool = {
+            guard let userLoc = userCLLocation else { return false }
+            let startLoc = CLLocation(latitude: routeStartCoord.latitude, longitude: routeStartCoord.longitude)
+            return userLoc.distance(from: startLoc) < 25000.0 // 距離起點 25km 內視為鄰近
+        }()
+        
+        let sortedConv: [SupplyPoint] = {
+            if userIsNearRoute {
+                return convStores.sorted { ($0.distanceToUserMeters ?? .infinity) < ($1.distanceToUserMeters ?? .infinity) }
+            } else {
+                return convStores.sorted {
+                    let d0 = $0.distanceToRouteMeters ?? .infinity
+                    let d1 = $1.distanceToRouteMeters ?? .infinity
+                    if abs(d0 - d1) > 300 {
+                        return d0 < d1
+                    }
+                    return $0.distanceFromStartKm < $1.distanceFromStartKm
+                }
+            }
+        }()
+        
+        let sortedOthers: [SupplyPoint] = {
+            if userIsNearRoute {
+                return others.sorted { ($0.distanceToUserMeters ?? .infinity) < ($1.distanceToUserMeters ?? .infinity) }
+            } else {
+                return others.sorted { ($0.distanceToRouteMeters ?? .infinity) < ($1.distanceToRouteMeters ?? .infinity) }
+            }
+        }()
         
         var top5List: [SupplyPoint] = []
-        for c in convStores {
+        for c in sortedConv {
             if top5List.count < 5 {
                 top5List.append(c)
             }
         }
-        for o in others {
+        for o in sortedOthers {
             if top5List.count < 5 {
                 top5List.append(o)
             }
@@ -634,12 +665,16 @@ public class MapRouteService: ObservableObject {
             return copy
         }
         
-        // 排序：離目前位置最近的 5 個放最前面，其餘依沿線里程進度排序
+        // 排序：標註為 top5 的放最前面，其餘依沿線里程進度排序
         finalResult.sort { a, b in
             if a.isNearestTop5 && !b.isNearestTop5 { return true }
             if !a.isNearestTop5 && b.isNearestTop5 { return false }
             if a.isNearestTop5 && b.isNearestTop5 {
-                return (a.distanceToUserMeters ?? 0) < (b.distanceToUserMeters ?? 0)
+                if userIsNearRoute {
+                    return (a.distanceToUserMeters ?? 0) < (b.distanceToUserMeters ?? 0)
+                } else {
+                    return a.distanceFromStartKm < b.distanceFromStartKm
+                }
             }
             return a.distanceFromStartKm < b.distanceFromStartKm
         }
