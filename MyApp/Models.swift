@@ -513,7 +513,17 @@ extension GPXTrack {
           <metadata>
             <name>\(trkName)</name>
             <time>\(isoFormatter.string(from: Date()))</time>
-          </metadata>
+          </metadata>\n
+        """
+        for wpt in waypoints {
+            let wptSafeName = wpt.name.replacingOccurrences(of: "<", with: "").replacingOccurrences(of: ">", with: "")
+            xml += """
+              <wpt lat="\(String(format: "%.6f", wpt.latitude))" lon="\(String(format: "%.6f", wpt.longitude))">
+                <name>\(wptSafeName)</name>
+              </wpt>\n
+            """
+        }
+        xml += """
           <trk>
             <name>\(trkName)</name>
             <trkseg>\n

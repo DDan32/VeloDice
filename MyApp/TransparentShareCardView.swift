@@ -9,15 +9,19 @@ import AppKit
 
 #if os(iOS)
 // Helper for iOS Native System Share Sheet (AirDrop, Save to Files, Social, etc.)
-struct ActivityShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
+public struct ActivityShareSheet: UIViewControllerRepresentable {
+    public let items: [Any]
     
-    func makeUIViewController(context: Context) -> UIActivityViewController {
+    public init(items: [Any]) {
+        self.items = items
+    }
+    
+    public func makeUIViewController(context: Context) -> UIActivityViewController {
         let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
         return controller
     }
     
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+    public func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 #endif
 

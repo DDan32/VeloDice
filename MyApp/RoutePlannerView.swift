@@ -59,6 +59,8 @@ public struct RoutePlannerView: View {
     @State private var showElevationSheet: Bool = false
     @State private var showSupplySheet: Bool = false
     @State private var showRouteGPXImporter: Bool = false
+    @State private var showExportShareSheet: Bool = false
+    @State private var exportedGPXURL: URL? = nil
     @State private var supplyPoints: [SupplyPoint] = []
     
     // Helpers for Compact Origin & Destination Summary Bar
@@ -177,6 +179,13 @@ public struct RoutePlannerView: View {
         .sheet(isPresented: $showSupplySheet) {
             supplyPointsSheet
         }
+        #if os(iOS)
+        .sheet(isPresented: $showExportShareSheet) {
+            if let url = exportedGPXURL {
+                ActivityShareSheet(items: [url])
+            }
+        }
+        #endif
         .alert(isPresented: $showAlert) {
             Alert(
                 title: Text(alertMessage?.contains("失敗") == true ? "路線規劃提示" : "導航路線已更新"),
@@ -299,6 +308,25 @@ public struct RoutePlannerView: View {
             ScrollView {
                 VStack(spacing: 16) {
                     reorderableRoutePlanningCard
+                    
+                    if !navigationSteps.isEmpty {
+                        Button {
+                            showStopsManagementSheet = false
+                            showDirectionsSheet = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                                Text("查看路口詳細轉向指引 (共 \(navigationSteps.count) 步)")
+                                    .font(.caption.bold())
+                            }
+                            .foregroundColor(.blue)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 4)
+                    }
                 }
                 .padding()
             }
@@ -620,13 +648,13 @@ public struct RoutePlannerView: View {
                 showRouteGPXImporter = true
             }
             
-            // 3. 路線指引
+            // 3. 匯出GPX
             bottomDockButton(
-                title: "路線指引",
-                icon: "arrow.triangle.turn.up.right.diamond.fill",
-                tintColor: .teal
+                title: "匯出GPX",
+                icon: "square.and.arrow.up.fill",
+                tintColor: .indigo
             ) {
-                showDirectionsSheet = true
+                exportCurrentRouteGPX()
             }
             
             // 4. 爬升
@@ -696,6 +724,42 @@ public struct RoutePlannerView: View {
         .buttonStyle(.plain)
     }
     
+    // MARK: - Export Current Planned Route as GPX File
+    private func exportCurrentRouteGPX() {
+        guard currentTrack.points.count > 1 else {
+            alertMessage = "目前尚未規劃路線，請先設定目的地並計算路線，或匯入 GPX 後再進行匯出分享。"
+            showAlert = true
+            return
+        }
+        
+        let gpxContent = currentTrack.toGPXString()
+        let dest = destinationName
+        let cleanTitle: String
+        if !currentTrack.title.isEmpty && currentTrack.title != "請輸入目的地開始導航" {
+            cleanTitle = currentTrack.title
+        } else if !dest.isEmpty {
+            cleanTitle = "VeloDice_路線_\(dest)"
+        } else {
+            cleanTitle = "VeloDice_規劃路線_\(Date().formatted(date: .numeric, time: .omitted))"
+        }
+        
+        let safeFileName = cleanTitle
+            .replacingOccurrences(of: " ", with: "_")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\\", with: "_") + ".gpx"
+            
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(safeFileName)
+        do {
+            try gpxContent.write(to: tempURL, atomically: true, encoding: .utf8)
+            self.exportedGPXURL = tempURL
+            self.showExportShareSheet = true
+        } catch {
+            alertMessage = "產生 GPX 檔案失敗：\(error.localizedDescription)"
+            showAlert = true
+        }
+    }
+
     // MARK: - Turn-by-Turn Directions Sheet (Apple / Google Maps Navigation Sheet)
     private var turnByTurnDirectionsSheet: some View {
         NavigationStack {
