@@ -35,7 +35,7 @@ public struct TransparentShareCardView: View {
     @State private var showAlert: Bool = false
     
     #if os(iOS)
-    @State private var shareSheetItem: UIImage? = nil
+    @State private var shareSheetItems: [Any] = []
     @State private var showShareSheet: Bool = false
     #endif
     
@@ -133,7 +133,7 @@ public struct TransparentShareCardView: View {
                             .tint(.orange)
                             
                             #if os(iOS)
-                            // Secondary: System Share (AirDrop, Save to Files, LINE, IG)
+                            // Secondary: System Share (AirDrop, Save to Files, Social)
                             Button {
                                 triggerSystemShare()
                             } label: {
@@ -156,7 +156,51 @@ public struct TransparentShareCardView: View {
                             #endif
                         }
                         
-                        Text("💡 依據您實際完成的軌跡與真實數據渲染。即使未開啟相簿權限，亦可透過「系統分享」直接儲存至「檔案」或 AirDrop 分享！")
+                        #if os(iOS)
+                        // Dedicated Social & Cycling Platform Row: Instagram & Strava / Velodash
+                        HStack(spacing: 12) {
+                            // Instagram Stories One-Tap Share
+                            Button {
+                                shareToInstagramStories()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "camera.circle.fill")
+                                    Text("Instagram 限動")
+                                }
+                                .font(.subheadline.bold())
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color(red: 0.51, green: 0.18, blue: 0.87), Color(red: 0.88, green: 0.19, blue: 0.42), Color(red: 0.98, green: 0.73, blue: 0.23)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ),
+                                    in: RoundedRectangle(cornerRadius: 10)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            
+                            // Strava / Velodash GPX Export
+                            Button {
+                                shareGPXForCyclingApps()
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.triangle.swap")
+                                    Text("Strava / Velodash")
+                                }
+                                .font(.subheadline.bold())
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                                .background(Color(red: 0.99, green: 0.35, blue: 0.08), in: RoundedRectangle(cornerRadius: 10))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        #endif
+                        
+                        Text("💡 支援一鍵直傳 Instagram 限時動態貼圖，以及 Strava、Velodash、Garmin 完整心率踏頻 GPX 匯出！")
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
@@ -182,8 +226,8 @@ public struct TransparentShareCardView: View {
             }
             #if os(iOS)
             .sheet(isPresented: $showShareSheet) {
-                if let img = shareSheetItem {
-                    ActivityShareSheet(items: [img])
+                if !shareSheetItems.isEmpty {
+                    ActivityShareSheet(items: shareSheetItems)
                 }
             }
             #endif
@@ -425,8 +469,61 @@ public struct TransparentShareCardView: View {
         let renderer = ImageRenderer(content: shareCardHUD.frame(width: 360, height: 480))
         renderer.scale = 2.0
         if let uiImg = renderer.uiImage {
-            self.shareSheetItem = uiImg
+            self.shareSheetItems = [uiImg]
             self.showShareSheet = true
+        }
+    }
+    
+    @MainActor
+    private func shareToInstagramStories() {
+        let renderer = ImageRenderer(content: shareCardHUD.frame(width: 360, height: 480))
+        renderer.scale = 3.0
+        guard let uiImg = renderer.uiImage, let pngData = uiImg.pngData() else {
+            alertTitle = "產生失敗"
+            alertMessage = "無法產生去背卡片，請重試。"
+            showAlert = true
+            return
+        }
+        
+        let storyURL = URL(string: "instagram-stories://share?source_application=com.velodice.ride")!
+        if UIApplication.shared.canOpenURL(storyURL) {
+            let pasteboardItems: [[String: Any]] = [
+                [
+                    "com.instagram.sharedSticker.stickerImage": pngData,
+                    "com.instagram.sharedSticker.backgroundTopColor": "#1A1A2E",
+                    "com.instagram.sharedSticker.backgroundBottomColor": "#16213E"
+                ]
+            ]
+            let pasteboardOptions: [UIPasteboard.OptionsKey: Any] = [
+                .expirationDate: Date().addingTimeInterval(300)
+            ]
+            UIPasteboard.general.setItems(pasteboardItems, options: pasteboardOptions)
+            UIApplication.shared.open(storyURL, options: [:], completionHandler: nil)
+        } else {
+            // 未安裝 Instagram 則喚起系統分享面版
+            self.shareSheetItems = [uiImg]
+            self.showShareSheet = true
+            alertTitle = "未偵測到 Instagram"
+            alertMessage = "未安裝 Instagram App，已開啟系統分享面板，您可直接儲存卡片或分享至其他通訊軟體。"
+            showAlert = true
+        }
+    }
+    
+    @MainActor
+    private func shareGPXForCyclingApps() {
+        let gpxString = track.toGPXString()
+        let sanitized = actualTitle.components(separatedBy: CharacterSet.alphanumerics.inverted).joined(separator: "_")
+        let fileName = "\(sanitized.isEmpty ? "VeloDice_Track" : sanitized).gpx"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        
+        do {
+            try gpxString.write(to: tempURL, atomically: true, encoding: .utf8)
+            self.shareSheetItems = [tempURL]
+            self.showShareSheet = true
+        } catch {
+            alertTitle = "匯出失敗"
+            alertMessage = "產生 GPX 檔案失敗：\(error.localizedDescription)"
+            showAlert = true
         }
     }
     

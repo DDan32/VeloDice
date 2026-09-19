@@ -128,13 +128,31 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
     
     nonisolated public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         Task { @MainActor in
-            let devName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "未命名感測器"
+            let rawName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "未命名感測器"
+            let devName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
             
+            // 檢查廣播包服務 UUID (最準確的 BLE 標準判斷)
             var devType: SensorDeviceType = .unknown
-            if devName.localizedCaseInsensitiveContains("HR") || devName.localizedCaseInsensitiveContains("Heart") {
-                devType = .heartRate
-            } else if devName.localizedCaseInsensitiveContains("CAD") || devName.localizedCaseInsensitiveContains("Cadence") || devName.localizedCaseInsensitiveContains("SPD") || devName.localizedCaseInsensitiveContains("Vortex") {
-                devType = .cadence
+            if let advertisedUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] {
+                if advertisedUUIDs.contains(BLEGATTUUIDs.heartRateService) {
+                    devType = .heartRate
+                } else if advertisedUUIDs.contains(BLEGATTUUIDs.cyclingSpeedCadenceService) {
+                    devType = .cadence
+                }
+            }
+            
+            // 若廣播未附帶 UUID，則智慧比對市售各大品牌關鍵字
+            if devType == .unknown {
+                let lower = devName.lowercased()
+                if lower.contains("hr") || lower.contains("heart") || lower.contains("tickr") ||
+                   lower.contains("polar") || lower.contains("h10") || lower.contains("h9") ||
+                   lower.contains("h64") || lower.contains("magene") || lower.contains("coospo") ||
+                   lower.contains("garmin") || lower.contains("decathlon") || lower.contains("igpsport") {
+                    devType = .heartRate
+                } else if lower.contains("cad") || lower.contains("cadence") || lower.contains("spd") ||
+                          lower.contains("vortex") || lower.contains("speed") {
+                    devType = .cadence
+                }
             }
             
             if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
@@ -158,7 +176,8 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
             if let idx = self.discoveredDevices.firstIndex(where: { $0.id == peripheral.identifier }) {
                 self.discoveredDevices[idx].isConnected = true
             }
-            peripheral.discoverServices([BLEGATTUUIDs.heartRateService, BLEGATTUUIDs.cyclingSpeedCadenceService])
+            // 發現所有可用服務，避免因特定 UUID 造成過濾失敗 (支援更多自定義或雙模感測器)
+            peripheral.discoverServices(nil)
         }
     }
     
@@ -182,19 +201,21 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
     nonisolated public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for s in services {
-            if s.uuid == BLEGATTUUIDs.heartRateService {
-                peripheral.discoverCharacteristics([BLEGATTUUIDs.heartRateMeasurement], for: s)
-            } else if s.uuid == BLEGATTUUIDs.cyclingSpeedCadenceService {
-                peripheral.discoverCharacteristics([BLEGATTUUIDs.cscMeasurement], for: s)
-            }
+            // 探索該服務的所有特徵值
+            peripheral.discoverCharacteristics(nil, for: s)
         }
     }
     
     nonisolated public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let characteristics = service.characteristics else { return }
         for c in characteristics {
-            if c.properties.contains(.notify) {
+            // 凡是有 notify 或 indicate 屬性的運動特徵值，皆主動啟用監聽
+            if c.properties.contains(.notify) || c.properties.contains(.indicate) {
                 peripheral.setNotifyValue(true, for: c)
+            }
+            // 若為心率或踏頻特徵值且支援 read，先讀取一次初始值
+            if (c.uuid == BLEGATTUUIDs.heartRateMeasurement || c.uuid == BLEGATTUUIDs.cscMeasurement) && c.properties.contains(.read) {
+                peripheral.readValue(for: c)
             }
         }
     }
@@ -233,6 +254,9 @@ public class BluetoothSensorManager: NSObject, ObservableObject, CBCentralManage
             self.liveHeartRateBpm = hrValue
             if let name = peripheralName {
                 self.connectedHeartRateDeviceName = name
+                if let idx = self.discoveredDevices.firstIndex(where: { $0.name == name }) {
+                    self.discoveredDevices[idx].type = .heartRate
+                }
             }
         }
     }

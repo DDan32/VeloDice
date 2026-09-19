@@ -244,7 +244,7 @@ public struct LiveHUDDashboardView: View {
                             }
                         }
                     }
-                    .mapStyle(.standard(elevation: .realistic))
+                    .mapStyle(.standard)
                     .frame(height: 220)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     

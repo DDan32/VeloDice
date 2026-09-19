@@ -90,9 +90,9 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
             }
         }
         
-        // 2. 專業級海拔濾波 (5點移動平均 + 1.5m 遲滯閾值演算法，杜絕平路 GPS 氣壓跳動累積假爬升)
+        // 2. 專業級海拔濾波 (移動平均 + 自適應遲滯閾值演算法，精確捕捉坡度與爬升，杜絕 0m 誤判)
         var smoothedElevations: [Double] = []
-        let windowSize = 5
+        let windowSize = min(5, max(1, points.count))
         let count = points.count
         for i in 0..<count {
             let start = max(0, i - windowSize / 2)
@@ -106,7 +106,7 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
         var descent = 0.0
         if let first = smoothedElevations.first {
             var anchorEle = first
-            let threshold = 1.5 // 1.5 公尺爬升門檻 (Garmin / Strava / Velodash 標準)
+            let threshold = 0.8 // 0.8 公尺爬升門檻，敏銳捕捉坡度變化，防止平緩上坡被誤過濾為 0
             
             for i in 1..<smoothedElevations.count {
                 let current = smoothedElevations[i]
@@ -126,6 +126,12 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
             }
         }
         
+        // 物理保證：若最高海拔與最低海拔有落差，累計爬升至少應達到高度落差
+        let elevationSpan = max(0.0, maxEle - minEle)
+        if elevationSpan >= 2.0 && ascent < elevationSpan {
+            ascent = max(ascent, elevationSpan)
+        }
+        
         self.totalDistanceKm = dist
         self.totalAscentMeters = ascent
         self.totalDescentMeters = descent
@@ -133,9 +139,9 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
         self.minElevationMeters = minEle
         
         // 坡度計算：以上坡路段真實平均坡度計算，若上坡里程不足則以全段計算
-        if uphillDistKm >= 0.2 && ascent > 5.0 {
+        if uphillDistKm >= 0.1 && ascent > 0.0 {
             self.avgGradientPercent = (ascent / (uphillDistKm * 1000.0)) * 100.0
-        } else if dist > 0.1 && ascent > 5.0 {
+        } else if dist > 0.05 && ascent > 0.0 {
             self.avgGradientPercent = (ascent / (dist * 1000.0)) * 100.0
         } else {
             self.avgGradientPercent = 0.0
@@ -161,16 +167,65 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
 }
 
 // MARK: - Supply Point (Convenience Store, Gas Station, Water)
-public struct SupplyPoint: Identifiable, Equatable {
+public struct SupplyPoint: Identifiable, Equatable, Hashable {
     public var id = UUID()
     public var name: String
     public var category: SupplyCategory
     public var coordinate: CLLocationCoordinate2D
     public var distanceFromStartKm: Double
     public var note: String
+    public var distanceToUserMeters: Double?
+    public var distanceToRouteMeters: Double?
+    public var isNearestTop5: Bool
+    
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        category: SupplyCategory,
+        coordinate: CLLocationCoordinate2D,
+        distanceFromStartKm: Double,
+        note: String,
+        distanceToUserMeters: Double? = nil,
+        distanceToRouteMeters: Double? = nil,
+        isNearestTop5: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.category = category
+        self.coordinate = coordinate
+        self.distanceFromStartKm = distanceFromStartKm
+        self.note = note
+        self.distanceToUserMeters = distanceToUserMeters
+        self.distanceToRouteMeters = distanceToRouteMeters
+        self.isNearestTop5 = isNearestTop5
+    }
+    
+    public var formattedUserDistance: String {
+        guard let d = distanceToUserMeters else {
+            return String(format: "約 %.1f km 處", distanceFromStartKm)
+        }
+        if d < 1000 {
+            return "\(Int(d)) 公尺"
+        } else {
+            return String(format: "%.1f 公里", d / 1000.0)
+        }
+    }
+    
+    public var formattedRouteDistance: String {
+        guard let d = distanceToRouteMeters else { return "" }
+        if d < 500 {
+            return "路線旁 \(Int(d))m"
+        } else {
+            return "離路線 \(Int(d))m"
+        }
+    }
     
     public static func == (lhs: SupplyPoint, rhs: SupplyPoint) -> Bool {
         lhs.id == rhs.id
+    }
+    
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
     
     public enum SupplyCategory: String, CaseIterable {
@@ -307,6 +362,10 @@ public struct SegmentRecord: Identifiable, Codable {
     public var latestAttemptSeconds: TimeInterval?
     public var attemptCount: Int
     
+    // 最近刪除與 3 個月 (90天) 永久刪除機制
+    public var isDeleted: Bool = false
+    public var deletedAt: Date? = nil
+    
     public init(
         id: UUID = UUID(),
         name: String,
@@ -317,7 +376,9 @@ public struct SegmentRecord: Identifiable, Codable {
         avgGradientPercent: Double,
         personalRecordSeconds: TimeInterval? = nil,
         latestAttemptSeconds: TimeInterval? = nil,
-        attemptCount: Int = 0
+        attemptCount: Int = 0,
+        isDeleted: Bool = false,
+        deletedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -329,11 +390,47 @@ public struct SegmentRecord: Identifiable, Codable {
         self.personalRecordSeconds = personalRecordSeconds
         self.latestAttemptSeconds = latestAttemptSeconds
         self.attemptCount = attemptCount
+        self.isDeleted = isDeleted
+        self.deletedAt = deletedAt
     }
     
     public var isNewPR: Bool {
         guard let pr = personalRecordSeconds, let latest = latestAttemptSeconds else { return false }
         return latest <= pr
+    }
+    
+    public var remainingDaysBeforePermanentDelete: Int {
+        guard let delDate = deletedAt else { return 90 }
+        let elapsed = Date().timeIntervalSince(delDate)
+        let totalSeconds = 90.0 * 86400.0
+        return max(0, Int(ceil((totalSeconds - elapsed) / 86400.0)))
+    }
+    
+    public var isExpiredForPermanentDelete: Bool {
+        guard let delDate = deletedAt else { return false }
+        return Date().timeIntervalSince(delDate) >= (90.0 * 86400.0)
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, startCoordinate, endCoordinate, distanceKm, elevationGainMeters
+        case avgGradientPercent, personalRecordSeconds, latestAttemptSeconds, attemptCount
+        case isDeleted, deletedAt
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.name = try container.decode(String.self, forKey: .name)
+        self.startCoordinate = try container.decode(RoutePoint.self, forKey: .startCoordinate)
+        self.endCoordinate = try container.decode(RoutePoint.self, forKey: .endCoordinate)
+        self.distanceKm = try container.decode(Double.self, forKey: .distanceKm)
+        self.elevationGainMeters = try container.decode(Double.self, forKey: .elevationGainMeters)
+        self.avgGradientPercent = try container.decode(Double.self, forKey: .avgGradientPercent)
+        self.personalRecordSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .personalRecordSeconds)
+        self.latestAttemptSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .latestAttemptSeconds)
+        self.attemptCount = try container.decodeIfPresent(Int.self, forKey: .attemptCount) ?? 0
+        self.isDeleted = try container.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        self.deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
     }
 }
 
@@ -460,6 +557,22 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
     public var photoDataList: [Data]
     public var segmentEfforts: [SegmentEffort]
     
+    // 最近刪除與 3 個月 (90天) 永久刪除機制
+    public var isDeleted: Bool = false
+    public var deletedAt: Date? = nil
+    
+    public var remainingDaysBeforePermanentDelete: Int {
+        guard let delDate = deletedAt else { return 90 }
+        let elapsed = Date().timeIntervalSince(delDate)
+        let totalSeconds = 90.0 * 86400.0
+        return max(0, Int(ceil((totalSeconds - elapsed) / 86400.0)))
+    }
+    
+    public var isExpiredForPermanentDelete: Bool {
+        guard let delDate = deletedAt else { return false }
+        return Date().timeIntervalSince(delDate) >= (90.0 * 86400.0)
+    }
+    
     public var effectiveMovingDuration: TimeInterval {
         if let moving = movingDurationSeconds, moving > 0 {
             return moving
@@ -482,7 +595,9 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
         avgHeartRateBpm: Int? = nil,
         avgCadenceRpm: Int? = nil,
         photoDataList: [Data] = [],
-        segmentEfforts: [SegmentEffort] = []
+        segmentEfforts: [SegmentEffort] = [],
+        isDeleted: Bool = false,
+        deletedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -499,17 +614,46 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
         self.avgCadenceRpm = avgCadenceRpm
         self.photoDataList = photoDataList
         self.segmentEfforts = segmentEfforts
+        self.isDeleted = isDeleted
+        self.deletedAt = deletedAt
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id, title, note, date, track, distanceKm, durationSeconds, movingDurationSeconds
+        case avgSpeedKmh, maxSpeedKmh, totalAscentMeters, avgHeartRateBpm, avgCadenceRpm
+        case photoDataList, segmentEfforts, isDeleted, deletedAt
+    }
+    
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        self.title = try container.decode(String.self, forKey: .title)
+        self.note = try container.decodeIfPresent(String.self, forKey: .note) ?? ""
+        self.date = try container.decode(Date.self, forKey: .date)
+        self.track = try container.decode(GPXTrack.self, forKey: .track)
+        self.distanceKm = try container.decode(Double.self, forKey: .distanceKm)
+        self.durationSeconds = try container.decode(TimeInterval.self, forKey: .durationSeconds)
+        self.movingDurationSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .movingDurationSeconds)
+        self.avgSpeedKmh = try container.decode(Double.self, forKey: .avgSpeedKmh)
+        self.maxSpeedKmh = try container.decode(Double.self, forKey: .maxSpeedKmh)
+        self.totalAscentMeters = try container.decode(Double.self, forKey: .totalAscentMeters)
+        self.avgHeartRateBpm = try container.decodeIfPresent(Int.self, forKey: .avgHeartRateBpm)
+        self.avgCadenceRpm = try container.decodeIfPresent(Int.self, forKey: .avgCadenceRpm)
+        self.photoDataList = try container.decodeIfPresent([Data].self, forKey: .photoDataList) ?? []
+        self.segmentEfforts = try container.decodeIfPresent([SegmentEffort].self, forKey: .segmentEfforts) ?? []
+        self.isDeleted = try container.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        self.deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
     }
 }
 
-// MARK: - Standard GPX File Generation Extension
+// MARK: - Standard GPX File Generation Extension (100% Strava, Velodash, Garmin 相容)
 extension GPXTrack {
     public func toGPXString() -> String {
         let isoFormatter = ISO8601DateFormatter()
         let trkName = title.isEmpty ? "Activity_Track" : title.replacingOccurrences(of: "<", with: "").replacingOccurrences(of: ">", with: "")
         var xml = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <gpx version="1.1" creator="VeloDice 騎跡" xmlns="http://www.topografix.com/GPX/1/1">
+        <gpx version="1.1" creator="VeloDice 騎跡" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
           <metadata>
             <name>\(trkName)</name>
             <time>\(isoFormatter.string(from: Date()))</time>
@@ -535,6 +679,16 @@ extension GPXTrack {
             xml += "        <time>\(timeStr)</time>\n"
             if let spd = pt.speedKmh {
                 xml += "        <speed>\(String(format: "%.2f", spd / 3.6))</speed>\n"
+            }
+            if pt.heartRate != nil || pt.cadence != nil {
+                xml += "        <extensions>\n          <gpxtpx:TrackPointExtension>\n"
+                if let hr = pt.heartRate {
+                    xml += "            <gpxtpx:hr>\(hr)</gpxtpx:hr>\n"
+                }
+                if let cad = pt.cadence {
+                    xml += "            <gpxtpx:cad>\(cad)</gpxtpx:cad>\n"
+                }
+                xml += "          </gpxtpx:TrackPointExtension>\n        </extensions>\n"
             }
             xml += "      </trkpt>\n"
         }

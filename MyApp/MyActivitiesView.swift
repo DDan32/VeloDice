@@ -28,7 +28,7 @@ public struct MyActivitiesView: View {
     @State private var showSegmentCreatedAlert: Bool = false
     @State private var segmentCreatedAlertMessage: String = ""
     
-    // Segment Delete & Restore States
+    // Segment & Activity Delete & Restore States
     @State private var segmentToDelete: SegmentRecord? = nil
     @State private var showDeleteSegmentConfirm: Bool = false
     @State private var showRestoreDefaultAlert: Bool = false
@@ -36,12 +36,26 @@ public struct MyActivitiesView: View {
     @State private var showUndoToast: Bool = false
     @State private var deletedSegmentName: String = ""
     
+    // Soft Delete & 90-Day Trash Bin States
+    @State private var showRecentlyDeletedSheet: Bool = false
+    @State private var showActivityDeletedToast: Bool = false
+    @State private var lastDeletedActivityTitle: String = ""
+    @State private var lastDeletedActivityId: UUID? = nil
+    @State private var deletedItemsTab: Int = 0
+    @State private var showEmptyTrashConfirm: Bool = false
+    
+    // Direct Sharing & Export States
+    @State private var shareSheetItems: [Any] = []
+    @State private var showExportShareSheet: Bool = false
+    @State private var igShareAlertMessage: String = ""
+    @State private var showIGShareAlert: Bool = false
+    
     public init(onLoadRouteToNavigation: ((GPXTrack) -> Void)? = nil) {
         self.onLoadRouteToNavigation = onLoadRouteToNavigation
     }
     
     private var availableYears: [Int] {
-        let years = Set(store.activities.map { Calendar.current.component(.year, from: $0.date) })
+        let years = Set(store.activeActivities.map { Calendar.current.component(.year, from: $0.date) })
         if years.isEmpty {
             return [Calendar.current.component(.year, from: Date())]
         }
@@ -77,11 +91,16 @@ public struct MyActivitiesView: View {
                 if showUndoToast {
                     HStack(spacing: 12) {
                         Image(systemName: "trash.fill")
-                            .foregroundColor(.secondary)
-                        Text("已刪除「\(deletedSegmentName)」")
-                            .font(.subheadline.bold())
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
+                            .foregroundColor(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("已移至最近刪除「\(deletedSegmentName)」")
+                                .font(.subheadline.bold())
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Text("系統將為您保留 90 天（3 個月）")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
                         Spacer()
                         Button {
                             if let _ = store.undoLastDeletedSegment() {
@@ -109,9 +128,71 @@ public struct MyActivitiesView: View {
                     .padding(.bottom, 12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
+                
+                // Bottom Undo Toast for Deleted Activity
+                if showActivityDeletedToast {
+                    HStack(spacing: 12) {
+                        Image(systemName: "trash.fill")
+                            .foregroundColor(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("已刪除「\(lastDeletedActivityTitle)」")
+                                .font(.subheadline.bold())
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Text("已移入最近刪除，保留 90 天（3 個月）")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            if let id = lastDeletedActivityId {
+                                store.restoreActivity(id: id)
+                                withAnimation {
+                                    showActivityDeletedToast = false
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.uturn.backward")
+                                Text("復原")
+                            }
+                            .font(.caption.bold())
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.green, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(14)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+                    .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .navigationTitle("我的運動歷程")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showRecentlyDeletedSheet = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "trash")
+                            let totalDeleted = store.deletedActivities.count + store.deletedSegments.count
+                            if totalDeleted > 0 {
+                                Text("最近刪除 (\(totalDeleted))")
+                                    .font(.caption.bold())
+                            } else {
+                                Text("最近刪除")
+                                    .font(.caption)
+                            }
+                        }
+                        .foregroundColor(store.deletedActivities.isEmpty && store.deletedSegments.isEmpty ? .secondary : .orange)
+                    }
+                }
+                
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showFileImporter = true
@@ -168,14 +249,14 @@ public struct MyActivitiesView: View {
                 Text(restoreDefaultMessage)
             }
             .confirmationDialog(
-                "確定刪除路段？",
+                "確定移至最近刪除？",
                 isPresented: $showDeleteSegmentConfirm,
                 titleVisibility: .visible
             ) {
-                Button("刪除路段與相關成績", role: .destructive) {
+                Button("移至最近刪除 (保留 3 個月)", role: .destructive) {
                     if let seg = segmentToDelete {
                         deletedSegmentName = seg.name
-                        store.deleteSegment(id: seg.id)
+                        store.softDeleteSegment(id: seg.id)
                         withAnimation {
                             showUndoToast = true
                         }
@@ -188,7 +269,7 @@ public struct MyActivitiesView: View {
                 }
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("刪除路段「\(segmentToDelete?.name ?? "")」後，已儲存活動中對應的 PR 計時成績將一併清理。刪除後可在下方點選「復原」，或隨時點擊「恢復經典預設」。")
+                Text("路段「\(segmentToDelete?.name ?? "")」將移至『最近刪除』。系統將為您保留 90 天（3 個月），期間可隨時恢復；90 天後系統將自動永久刪除。")
             }
             .sheet(item: $selectedDetailActivity) { act in
                 activityDetailSheet(act)
@@ -202,6 +283,9 @@ public struct MyActivitiesView: View {
             .sheet(isPresented: $showAddSegmentSheet) {
                 addCustomSegmentSheet
             }
+            .sheet(isPresented: $showRecentlyDeletedSheet) {
+                recentlyDeletedManagementSheet
+            }
             .onAppear {
                 if !availableYears.contains(selectedYear), let first = availableYears.first {
                     selectedYear = first
@@ -213,7 +297,7 @@ public struct MyActivitiesView: View {
     // MARK: - Tab 0: Activities List View (1頁是1年，月份近的在上面，最近的在上面)
     private var activitiesListView: some View {
         Group {
-            if store.activities.isEmpty {
+            if store.activeActivities.isEmpty {
                 emptyStateView
             } else {
                 VStack(spacing: 0) {
@@ -277,7 +361,7 @@ public struct MyActivitiesView: View {
     }
     
     private func yearActivitiesPage(year: Int) -> some View {
-        let yearActivities = store.activities.filter {
+        let yearActivities = store.activeActivities.filter {
             Calendar.current.component(.year, from: $0.date) == year
         }.sorted(by: { $0.date > $1.date }) // 最近的在上面
         
@@ -346,8 +430,11 @@ public struct MyActivitiesView: View {
                             .onDelete { indexSet in
                                 for idx in indexSet {
                                     let target = group.activities[idx]
-                                    if let realIdx = store.activities.firstIndex(where: { $0.id == target.id }) {
-                                        store.deleteActivity(at: IndexSet(integer: realIdx))
+                                    store.softDeleteActivity(id: target.id)
+                                    lastDeletedActivityTitle = target.title
+                                    lastDeletedActivityId = target.id
+                                    withAnimation {
+                                        showActivityDeletedToast = true
                                     }
                                 }
                             }
@@ -541,7 +628,7 @@ public struct MyActivitiesView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
                 
-                if store.segments.isEmpty {
+                if store.activeSegments.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "flag.slash")
                             .font(.system(size: 40))
@@ -559,7 +646,7 @@ public struct MyActivitiesView: View {
                     }
                     .padding(32)
                 } else {
-                    ForEach(store.segments) { seg in
+                    ForEach(store.activeSegments) { seg in
                         segmentCard(seg)
                     }
                 }
@@ -939,20 +1026,44 @@ public struct MyActivitiesView: View {
                         .buttonStyle(.plain)
                     }
                     
-                    // Native GPX File Export ShareLink
+                    // Native GPX File Export ShareLink (Strava / Velodash 相容)
                     if let gpxURL = store.exportGPXFile(for: act) {
-                        ShareLink(item: gpxURL) {
-                            HStack {
-                                Image(systemName: "arrow.down.doc.fill")
-                                Text("匯出 GPX 軌跡檔")
+                        HStack(spacing: 10) {
+                            ShareLink(item: gpxURL) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.triangle.swap")
+                                    Text("匯出至 Strava / Velodash (GPX)")
+                                }
+                                .font(.subheadline.bold())
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color(red: 0.99, green: 0.35, blue: 0.08), in: RoundedRectangle(cornerRadius: 10))
                             }
-                            .font(.subheadline.bold())
-                            .foregroundColor(.purple)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(Color.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                         }
                     }
+                    
+                    // Soft Delete Activity Button (移至最近刪除，保留 90 天)
+                    Button(role: .destructive) {
+                        store.softDeleteActivity(id: act.id)
+                        lastDeletedActivityTitle = act.title
+                        lastDeletedActivityId = act.id
+                        selectedDetailActivity = nil
+                        withAnimation {
+                            showActivityDeletedToast = true
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "trash")
+                            Text("刪除此活動 (移至最近刪除，保留 3 個月)")
+                        }
+                        .font(.subheadline.bold())
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
                     
                     // Segment Efforts Section (Strava-style PRs)
                     if !act.segmentEfforts.isEmpty {
@@ -1131,6 +1242,254 @@ public struct MyActivitiesView: View {
             return String(format: "%d小時%02d分%02d秒", hrs, mins, secs)
         } else {
             return String(format: "%02d分%02d秒", mins, secs)
+        }
+    }
+    
+    // MARK: - Recently Deleted Management Sheet (保留 90 天 / 3 個月，支援恢復與自動永久銷毀)
+    private var recentlyDeletedManagementSheet: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                // Warning / Retention Notice Banner (醒目備註通知)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .foregroundColor(.orange)
+                        Text("⚠️ 備註說明：90 天自動清理機制")
+                            .font(.subheadline.bold())
+                            .foregroundColor(.primary)
+                    }
+                    Text("您刪除的過往活動與路段最佳（PR）將安全保留 90 天（3 個月）。在此期間內，您可以隨時一鍵「恢復」。超過 90 天後，系統將自動永久銷毀以釋放儲存空間並保障隱私。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+                .padding(.top, 8)
+                
+                // Segmented Tab (已刪除活動 vs 已刪除路段)
+                Picker("", selection: $deletedItemsTab) {
+                    Text("已刪除活動 (\(store.deletedActivities.count))").tag(0)
+                    Text("已刪除路段 (\(store.deletedSegments.count))").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                
+                if deletedItemsTab == 0 {
+                    // 已刪除活動列表
+                    if store.deletedActivities.isEmpty {
+                        VStack(spacing: 12) {
+                            Spacer()
+                            Image(systemName: "trash.slash")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("沒有已刪除的活動")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                            Text("所有刪除的活動將在此處暫存 90 天")
+                                .font(.caption)
+                                .foregroundColor(.secondary.opacity(0.8))
+                            Spacer()
+                        }
+                    } else {
+                        List {
+                            ForEach(store.deletedActivities) { act in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .top) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(act.title)
+                                                .font(.headline)
+                                                .foregroundColor(.primary)
+                                            Text(act.date.formatted(date: .abbreviated, time: .shortened))
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        
+                                        // 剩餘天數標籤
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "hourglass")
+                                            Text("剩餘 \(act.remainingDaysBeforePermanentDelete) 天")
+                                        }
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.orange.opacity(0.15), in: Capsule())
+                                        .foregroundColor(.orange)
+                                    }
+                                    
+                                    HStack {
+                                        Text("\(String(format: "%.1f", act.distanceKm)) km · \(formattedDuration(act.durationSeconds)) · 爬升 \(Int(act.totalAscentMeters)) m")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        Spacer()
+                                        
+                                        // 恢復按鈕
+                                        Button {
+                                            withAnimation {
+                                                store.restoreActivity(id: act.id)
+                                            }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "arrow.uturn.backward.circle.fill")
+                                                Text("恢復")
+                                            }
+                                            .font(.caption.bold())
+                                            .foregroundColor(.green)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Color.green.opacity(0.12), in: Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                        
+                                        // 永久刪除按鈕
+                                        Button(role: .destructive) {
+                                            withAnimation {
+                                                store.permanentlyDeleteActivity(id: act.id)
+                                            }
+                                        } label: {
+                                            Image(systemName: "trash")
+                                                .font(.caption)
+                                                .foregroundColor(.red)
+                                                .padding(6)
+                                                .background(Color.red.opacity(0.1), in: Circle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        .listStyle(.insetGrouped)
+                    }
+                } else {
+                    // 已刪除路段列表
+                    if store.deletedSegments.isEmpty {
+                        VStack(spacing: 12) {
+                            Spacer()
+                            Image(systemName: "flag.slash")
+                                .font(.system(size: 48))
+                                .foregroundColor(.secondary)
+                            Text("沒有已刪除的路段")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                            Text("所有刪除的路段將在此處暫存 90 天")
+                                .font(.caption)
+                                .foregroundColor(.secondary.opacity(0.8))
+                            Spacer()
+                        }
+                    } else {
+                        List {
+                            ForEach(store.deletedSegments) { seg in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .top) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(seg.name)
+                                                .font(.headline)
+                                                .foregroundColor(.primary)
+                                            Text("\(String(format: "%.1f", seg.distanceKm)) km · 爬升 \(Int(seg.elevationGainMeters)) m · 坡度 \(String(format: "%.1f%%", seg.avgGradientPercent))")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        
+                                        // 剩餘天數標籤
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "hourglass")
+                                            Text("剩餘 \(seg.remainingDaysBeforePermanentDelete) 天")
+                                        }
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.orange.opacity(0.15), in: Capsule())
+                                        .foregroundColor(.orange)
+                                    }
+                                    
+                                    HStack {
+                                        if let pr = seg.personalRecordSeconds {
+                                            Text("歷史最佳 PR: \(formattedDuration(pr))")
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.purple)
+                                        } else {
+                                            Text("尚未建立 PR")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        
+                                        // 恢復按鈕
+                                        Button {
+                                            withAnimation {
+                                                store.restoreSegment(id: seg.id)
+                                            }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "arrow.uturn.backward.circle.fill")
+                                                Text("恢復")
+                                            }
+                                            .font(.caption.bold())
+                                            .foregroundColor(.green)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Color.green.opacity(0.12), in: Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                        
+                                        // 永久刪除按鈕
+                                        Button(role: .destructive) {
+                                            withAnimation {
+                                                store.permanentlyDeleteSegment(id: seg.id)
+                                            }
+                                        } label: {
+                                            Image(systemName: "trash")
+                                                .font(.caption)
+                                                .foregroundColor(.red)
+                                                .padding(6)
+                                                .background(Color.red.opacity(0.1), in: Circle())
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        .listStyle(.insetGrouped)
+                    }
+                }
+            }
+            .navigationTitle("最近刪除 (保留90天)")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if (deletedItemsTab == 0 && !store.deletedActivities.isEmpty) || (deletedItemsTab == 1 && !store.deletedSegments.isEmpty) {
+                        Button("清空此回收筒", role: .destructive) {
+                            showEmptyTrashConfirm = true
+                        }
+                        .foregroundColor(.red)
+                    }
+                }
+                
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        showRecentlyDeletedSheet = false
+                    }
+                }
+            }
+            .confirmationDialog("確定清空回收筒？", isPresented: $showEmptyTrashConfirm, titleVisibility: .visible) {
+                Button("永久刪除所有項目", role: .destructive) {
+                    if deletedItemsTab == 0 {
+                        store.emptyTrashActivities()
+                    } else {
+                        store.emptyTrashSegments()
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("此操作將立即永久刪除所有回收筒中的項目，無法再恢復。")
+            }
         }
     }
 }

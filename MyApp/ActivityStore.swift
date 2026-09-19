@@ -16,7 +16,7 @@ public class ActivityStore: ObservableObject {
     public init() {
         loadActivities()
         loadSegments()
-        recalculateAllSegmentPRs()
+        cleanupExpiredDeletedItems()
     }
     
     private var activitiesFileURL: URL {
@@ -29,25 +29,43 @@ public class ActivityStore: ObservableObject {
         return docs.appendingPathComponent(segmentsFileName)
     }
     
-    // MARK: - Strava-style Career All-Time Records (歷年最高、最長、最快)
+    // MARK: - Filtered Active and Recently Deleted Items
+    public var activeActivities: [SavedActivity] {
+        activities.filter { !$0.isDeleted }
+    }
+    
+    public var deletedActivities: [SavedActivity] {
+        activities.filter { $0.isDeleted }.sorted(by: { ($0.deletedAt ?? Date()) > ($1.deletedAt ?? Date()) })
+    }
+    
+    public var activeSegments: [SegmentRecord] {
+        segments.filter { !$0.isDeleted }
+    }
+    
+    public var deletedSegments: [SegmentRecord] {
+        segments.filter { $0.isDeleted }.sorted(by: { ($0.deletedAt ?? Date()) > ($1.deletedAt ?? Date()) })
+    }
+    
+    // MARK: - Strava-style Career All-Time Records (歷年最高、最長、最快 - 僅計入有效未刪除活動)
     public var careerStats: CareerAllTimeStats {
-        guard !activities.isEmpty else {
+        let validActs = activeActivities
+        guard !validActs.isEmpty else {
             return CareerAllTimeStats()
         }
         
-        let totalRides = activities.count
-        let totalDist = activities.reduce(0.0) { $0 + $1.distanceKm }
-        let totalAscent = activities.reduce(0.0) { $0 + $1.totalAscentMeters }
-        let totalDuration = activities.reduce(0.0) { $0 + $1.durationSeconds }
+        let totalRides = validActs.count
+        let totalDist = validActs.reduce(0.0) { $0 + $1.distanceKm }
+        let totalAscent = validActs.reduce(0.0) { $0 + $1.totalAscentMeters }
+        let totalDuration = validActs.reduce(0.0) { $0 + $1.durationSeconds }
         
-        let longestDist = activities.map(\.distanceKm).max() ?? 0.0
-        let highestAscent = activities.map(\.totalAscentMeters).max() ?? 0.0
-        let fastestSpeed = activities.map(\.maxSpeedKmh).max() ?? 0.0
-        let longestDuration = activities.map(\.durationSeconds).max() ?? 0.0
+        let longestDist = validActs.map(\.distanceKm).max() ?? 0.0
+        let highestAscent = validActs.map(\.totalAscentMeters).max() ?? 0.0
+        let fastestSpeed = validActs.map(\.maxSpeedKmh).max() ?? 0.0
+        let longestDuration = validActs.map(\.durationSeconds).max() ?? 0.0
         
         // 最快平均時速 (門檻：需大於等於 5 公里，避免原地或短距離造成虛高)
-        let meaningfulActivities = activities.filter { $0.distanceKm >= 5.0 }
-        let fastestAvgSpeed = meaningfulActivities.map(\.avgSpeedKmh).max() ?? (activities.map(\.avgSpeedKmh).max() ?? 0.0)
+        let meaningfulActivities = validActs.filter { $0.distanceKm >= 5.0 }
+        let fastestAvgSpeed = meaningfulActivities.map(\.avgSpeedKmh).max() ?? (validActs.map(\.avgSpeedKmh).max() ?? 0.0)
         
         return CareerAllTimeStats(
             totalRides: totalRides,
@@ -62,7 +80,7 @@ public class ActivityStore: ObservableObject {
         )
     }
     
-    // MARK: - Activity Management
+    // MARK: - Activity Management (Soft Delete & Restore & 90 Days Retention)
     public func loadActivities() {
         guard FileManager.default.fileExists(atPath: activitiesFileURL.path) else { return }
         do {
@@ -86,16 +104,48 @@ public class ActivityStore: ObservableObject {
         persistSegments()
     }
     
-    public func deleteActivity(at offsets: IndexSet) {
-        self.activities.remove(atOffsets: offsets)
+    /// 軟刪除活動（移至「最近刪除」，3 個月內可恢復）
+    public func softDeleteActivity(id: UUID) {
+        if let idx = self.activities.firstIndex(where: { $0.id == id }) {
+            self.activities[idx].isDeleted = true
+            self.activities[idx].deletedAt = Date()
+            persistActivities()
+        }
+    }
+    
+    /// 恢復已刪除的活動
+    public func restoreActivity(id: UUID) {
+        if let idx = self.activities.firstIndex(where: { $0.id == id }) {
+            self.activities[idx].isDeleted = false
+            self.activities[idx].deletedAt = nil
+            persistActivities()
+        }
+    }
+    
+    /// 立即永久刪除活動
+    public func permanentlyDeleteActivity(id: UUID) {
+        self.activities.removeAll(where: { $0.id == id })
         persistActivities()
-        recalculateAllSegmentPRs()
+    }
+    
+    /// 清空最近刪除的全部活動
+    public func emptyTrashActivities() {
+        self.activities.removeAll(where: { $0.isDeleted })
+        persistActivities()
+    }
+    
+    /// 舊有相容介面（預設為軟刪除移至最近刪除）
+    public func deleteActivity(at offsets: IndexSet) {
+        let currentActive = activeActivities
+        for offset in offsets {
+            if currentActive.indices.contains(offset) {
+                softDeleteActivity(id: currentActive[offset].id)
+            }
+        }
     }
     
     public func deleteActivity(id: UUID) {
-        self.activities.removeAll(where: { $0.id == id })
-        persistActivities()
-        recalculateAllSegmentPRs()
+        softDeleteActivity(id: id)
     }
     
     private func persistActivities() {
@@ -192,27 +242,67 @@ public class ActivityStore: ObservableObject {
         recalculateAllSegmentPRs()
     }
     
-    // MARK: - Delete & Restore Segments (支援刪除、復原與還原預設)
+    // MARK: - Delete & Restore Segments (支援軟刪除移至最近刪除、復原與 3 個月永久刪除)
+    /// 軟刪除路段（移至「最近刪除路段」，3 個月內可恢復）
     @discardableResult
-    public func deleteSegment(id: UUID) -> SegmentRecord? {
+    public func softDeleteSegment(id: UUID) -> SegmentRecord? {
         guard let idx = segments.firstIndex(where: { $0.id == id }) else { return nil }
-        let removed = segments.remove(at: idx)
-        self.lastDeletedSegment = removed
-        
+        segments[idx].isDeleted = true
+        segments[idx].deletedAt = Date()
+        let seg = segments[idx]
+        self.lastDeletedSegment = seg
+        persistSegments()
+        return seg
+    }
+    
+    /// 恢復已刪除的路段
+    @discardableResult
+    public func restoreSegment(id: UUID) -> SegmentRecord? {
+        guard let idx = segments.firstIndex(where: { $0.id == id }) else { return nil }
+        segments[idx].isDeleted = false
+        segments[idx].deletedAt = nil
+        let seg = segments[idx]
+        persistSegments()
+        return seg
+    }
+    
+    /// 立即永久刪除路段
+    public func permanentlyDeleteSegment(id: UUID) {
+        segments.removeAll(where: { $0.id == id })
         // 清理活動中對此路段的歷史 effort
         for i in 0..<activities.count {
             activities[i].segmentEfforts.removeAll(where: { $0.segmentId == id })
         }
         persistActivities()
         persistSegments()
-        return removed
+    }
+    
+    /// 清空最近刪除的全部路段
+    public func emptyTrashSegments() {
+        let deletedIDs = Set(segments.filter { $0.isDeleted }.map { $0.id })
+        segments.removeAll(where: { $0.isDeleted })
+        for i in 0..<activities.count {
+            activities[i].segmentEfforts.removeAll(where: {
+                if let sid = $0.segmentId {
+                    return deletedIDs.contains(sid)
+                }
+                return false
+            })
+        }
+        persistActivities()
+        persistSegments()
+    }
+    
+    @discardableResult
+    public func deleteSegment(id: UUID) -> SegmentRecord? {
+        return softDeleteSegment(id: id)
     }
     
     public func deleteSegment(at offsets: IndexSet) {
+        let currentActive = activeSegments
         for idx in offsets {
-            if segments.indices.contains(idx) {
-                let id = segments[idx].id
-                deleteSegment(id: id)
+            if currentActive.indices.contains(idx) {
+                softDeleteSegment(id: currentActive[idx].id)
             }
         }
     }
@@ -220,11 +310,7 @@ public class ActivityStore: ObservableObject {
     @discardableResult
     public func undoLastDeletedSegment() -> SegmentRecord? {
         guard let restored = lastDeletedSegment else { return nil }
-        self.segments.append(restored)
-        self.lastDeletedSegment = nil
-        persistSegments()
-        recalculateAllSegmentPRs()
-        return restored
+        return restoreSegment(id: restored.id)
     }
     
     @discardableResult
@@ -239,9 +325,23 @@ public class ActivityStore: ObservableObject {
         }
         if restoredCount > 0 {
             persistSegments()
-            recalculateAllSegmentPRs()
         }
         return restoredCount
+    }
+    
+    // MARK: - 3 個月 (90天) 自動永久清理過期已刪除項目 (背景安靜執行，保證隱私與儲存空間)
+    public func cleanupExpiredDeletedItems() {
+        let beforeActCount = activities.count
+        activities.removeAll(where: { $0.isExpiredForPermanentDelete })
+        if activities.count != beforeActCount {
+            persistActivities()
+        }
+        
+        let beforeSegCount = segments.count
+        segments.removeAll(where: { $0.isExpiredForPermanentDelete })
+        if segments.count != beforeSegCount {
+            persistSegments()
+        }
     }
     
     private func persistSegments() {
