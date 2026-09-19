@@ -4,7 +4,7 @@
 
 [![Swift](https://img.shields.io/badge/Swift-5.9+-orange.svg?style=flat&logo=swift)](https://swift.org)
 [![Platform](https://img.shields.io/badge/Platform-iOS%2017.0+%20%7C%20macOS%2014.0+-blue.svg?style=flat&logo=apple)](https://developer.apple.com)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 
 ---
 
