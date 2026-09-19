@@ -55,11 +55,33 @@ public struct RoutePlannerView: View {
     }
     
     // Sheet & Importer Toggles
+    @State private var showStopsManagementSheet: Bool = false
     @State private var showElevationSheet: Bool = false
     @State private var showSupplySheet: Bool = false
     @State private var showRouteGPXImporter: Bool = false
     @State private var supplyPoints: [SupplyPoint] = []
     
+    // Helpers for Compact Origin & Destination Summary Bar
+    private var originDisplayTitle: String {
+        let raw = routeStops.first?.name.trimmingCharacters(in: .whitespaces) ?? ""
+        return raw.isEmpty ? "目前位置" : raw
+    }
+    
+    private var destinationDisplayTitle: String {
+        guard routeStops.count >= 2 else { return "點擊設定目的地" }
+        let raw = routeStops.last?.name.trimmingCharacters(in: .whitespaces) ?? ""
+        return raw.isEmpty ? "點擊輸入目的地..." : raw
+    }
+    
+    private var destinationName: String {
+        guard routeStops.count >= 2 else { return "" }
+        return routeStops.last?.name.trimmingCharacters(in: .whitespaces) ?? ""
+    }
+    
+    private var intermediateStopsCount: Int {
+        max(0, routeStops.count - 2)
+    }
+
     // Map Camera & Alerts
     @State private var mapPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var alertMessage: String?
@@ -132,16 +154,19 @@ public struct RoutePlannerView: View {
             .mapStyle(.standard(elevation: .realistic))
             .edgesIgnoringSafeArea(.all)
             
-            // Floating UI Overlay
-            VStack(spacing: 8) {
-                // Multi-Stop Route Control Card
-                reorderableRoutePlanningCard
-                
-                // Quick Action Buttons Row (Elevation Profile & Turn Instructions)
+            // Minimal Floating Top Route Summary Bar (空間大幅釋放，僅保留起點與終點)
+            compactRouteSummaryBar
+                .padding(.horizontal)
+                .padding(.top, 8)
+            
+            // Uniform 5 Bottom Action Buttons Dock (固定於底部：現在位置、匯入GPX、路線指引、爬升、補給站)
+            VStack {
+                Spacer()
                 navigationActionRow
             }
-            .padding(.horizontal)
-            .padding(.top, 8)
+        }
+        .sheet(isPresented: $showStopsManagementSheet) {
+            routeStopsManagementSheet
         }
         .sheet(isPresented: $showDirectionsSheet) {
             turnByTurnDirectionsSheet
@@ -196,6 +221,103 @@ public struct RoutePlannerView: View {
         }
     }
     
+    // MARK: - Minimal Floating Top Route Summary Bar (起點與終點精簡卡片)
+    private var compactRouteSummaryBar: some View {
+        Button {
+            showStopsManagementSheet = true
+        } label: {
+            HStack(spacing: 12) {
+                // Origin & Destination Indicators
+                VStack(alignment: .leading, spacing: 5) {
+                    // Origin
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                        Text(originDisplayTitle)
+                            .font(.subheadline.bold())
+                            .foregroundColor(.primary)
+                            .lineLimit(1)
+                    }
+                    
+                    // Destination
+                    HStack(spacing: 8) {
+                        Image(systemName: "flag.checkered")
+                            .font(.system(size: 9))
+                            .foregroundColor(.red)
+                        Text(destinationDisplayTitle)
+                            .font(.subheadline)
+                            .foregroundColor(destinationName.isEmpty ? .secondary : .primary)
+                            .lineLimit(1)
+                    }
+                }
+                
+                Spacer()
+                
+                // Intermediate stops count badge
+                if intermediateStopsCount > 0 {
+                    Text("+\(intermediateStopsCount) 途經點")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.orange.opacity(0.15), in: Capsule())
+                }
+                
+                // Edit Settings Pill Icon
+                if isCalculatingRoute {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(4)
+                } else {
+                    HStack(spacing: 4) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 12, weight: .bold))
+                        Text("站點")
+                            .font(.caption2.bold())
+                    }
+                    .foregroundColor(.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.blue.opacity(0.1), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    // MARK: - Route Stops Management Sheet (獨立站點與停靠點管理視窗)
+    private var routeStopsManagementSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    reorderableRoutePlanningCard
+                }
+                .padding()
+            }
+            .navigationTitle("路線與停靠站規劃")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") {
+                        showStopsManagementSheet = false
+                    }
+                    .font(.headline.bold())
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
     // MARK: - Reorderable Multi-Stop Route Planning Card
     private var reorderableRoutePlanningCard: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -228,6 +350,7 @@ public struct RoutePlannerView: View {
                 // Calculate Route Button
                 Button {
                     activeEditingStopID = nil
+                    showStopsManagementSheet = false
                     calculateRealRoute()
                 } label: {
                     HStack(spacing: 4) {
@@ -353,6 +476,7 @@ public struct RoutePlannerView: View {
                             Button {
                                 if let lastIdx = routeStops.indices.last {
                                     routeStops[lastIdx].name = dest
+                                    showStopsManagementSheet = false
                                     calculateRealRoute()
                                 }
                             } label: {
@@ -385,6 +509,7 @@ public struct RoutePlannerView: View {
                         routeStops[idx].name = suggestion.title
                         addToHistory(suggestion.title)
                         activeEditingStopID = nil
+                        showStopsManagementSheet = false
                         calculateRealRoute()
                     }
                 } label: {
@@ -465,103 +590,110 @@ public struct RoutePlannerView: View {
         calculateRealRoute()
     }
     
-    // MARK: - Action Buttons Row
+    // MARK: - Uniform 5 Bottom Action Buttons (現在位置，匯入GPX，路線指引，爬升，補給站)
     private var navigationActionRow: some View {
-        HStack(spacing: 8) {
-            // Recalculate directly from current GPS
-            Button {
-                if let firstIdx = routeStops.indices.first {
-                    routeStops[firstIdx].name = "目前位置"
-                    calculateRealRoute()
+        HStack(spacing: 6) {
+            // 1. 現在位置
+            bottomDockButton(
+                title: "現在位置",
+                icon: "location.fill",
+                tintColor: .blue
+            ) {
+                if let userLoc = tracker.currentUserLocation?.coordinate {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        mapPosition = .region(MKCoordinateRegion(
+                            center: userLoc,
+                            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                        ))
+                    }
+                } else {
+                    mapPosition = .userLocation(fallback: .automatic)
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "location.fill")
-                        .foregroundColor(.green)
-                    Text("以目前位置重算")
-                        .font(.caption.bold())
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(.ultraThinMaterial, in: Capsule())
-                .shadow(radius: 2)
             }
-            .buttonStyle(.plain)
             
-            // Import Planned GPX Route Button
-            Button {
+            // 2. 匯入GPX
+            bottomDockButton(
+                title: "匯入GPX",
+                icon: "square.and.arrow.down.fill",
+                tintColor: .purple
+            ) {
                 showRouteGPXImporter = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.and.arrow.down.fill")
-                        .foregroundColor(.purple)
-                    Text("匯入 GPX 規劃路線")
-                        .font(.caption.bold())
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(.ultraThinMaterial, in: Capsule())
-                .shadow(radius: 2)
-            }
-            .buttonStyle(.plain)
-            
-            // Turn-by-Turn Steps Button
-            if !navigationSteps.isEmpty {
-                Button {
-                    showDirectionsSheet = true
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "list.bullet")
-                            .foregroundColor(.blue)
-                        Text("路線指引")
-                            .font(.caption.bold())
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .shadow(radius: 2)
-                }
-                .buttonStyle(.plain)
             }
             
-            Spacer()
+            // 3. 路線指引
+            bottomDockButton(
+                title: "路線指引",
+                icon: "arrow.triangle.turn.up.right.diamond.fill",
+                tintColor: .teal
+            ) {
+                showDirectionsSheet = true
+            }
             
-            // Elevation Profile Button
-            if currentTrack.points.count > 1 {
-                Button {
+            // 4. 爬升
+            bottomDockButton(
+                title: "爬升",
+                icon: "mountain.2.fill",
+                tintColor: .green
+            ) {
+                if currentTrack.points.count > 1 {
                     showElevationSheet = true
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mountain.2.fill")
-                            .foregroundColor(.teal)
-                        Text("海拔剖面")
-                            .font(.caption.bold())
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .shadow(radius: 2)
+                } else {
+                    alertMessage = "尚未載入路線，請先設定目的地規劃路線或匯入 GPX，以查看海拔爬升剖面。"
+                    showAlert = true
                 }
-                .buttonStyle(.plain)
-                
-                // Supply Points Button
-                Button {
+            }
+            
+            // 5. 補給站
+            bottomDockButton(
+                title: "補給站",
+                icon: "storefront.fill",
+                tintColor: .orange
+            ) {
+                if !supplyPoints.isEmpty {
                     showSupplySheet = true
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "storefront.fill")
-                            .foregroundColor(.orange)
-                        Text("補給站")
-                            .font(.caption.bold())
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .shadow(radius: 2)
+                } else if currentTrack.points.count > 1 {
+                    showSupplySheet = true
+                } else {
+                    alertMessage = "尚未載入路線，請先設定目的地規劃路線或匯入 GPX，以搜尋沿途補給站。"
+                    showAlert = true
                 }
-                .buttonStyle(.plain)
             }
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        )
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+    }
+    
+    private func bottomDockButton(
+        title: String,
+        icon: String,
+        tintColor: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(tintColor)
+                    .frame(height: 22)
+                
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 7)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
     }
     
     // MARK: - Turn-by-Turn Directions Sheet (Apple / Google Maps Navigation Sheet)
