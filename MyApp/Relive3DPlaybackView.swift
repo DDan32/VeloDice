@@ -11,7 +11,13 @@ public struct Relive3DPlaybackView: View {
         case standard = "Apple 標準"
     }
     
+    public enum CameraMode: String, CaseIterable {
+        case followRider = "聚焦騎士"
+        case overview = "全景俯瞰"
+    }
+    
     @State private var mapStyleSelection: PlaybackMapStyle = .imagery
+    @State private var cameraMode: CameraMode = .followRider
     @State private var progress: Double = 0.0
     @State private var isPlaying: Bool = false
     @State private var playbackSpeed: Double = 1.0 // 0.5x, 1x, 2x, 3x
@@ -19,6 +25,8 @@ public struct Relive3DPlaybackView: View {
     @State private var timer: Timer? = nil
     
     @State private var currentInterpolatedCoordinate: CLLocationCoordinate2D? = nil
+    @State private var currentHeading: Double = 0.0
+    @State private var frameCounter: Int = 0
     
     public init(track: GPXTrack) {
         self.track = track
@@ -49,7 +57,7 @@ public struct Relive3DPlaybackView: View {
         }
         .edgesIgnoringSafeArea(track.points.count > 1 ? .bottom : [])
         .onAppear {
-            initializePanoramicCamera()
+            initializeCamera()
         }
         .onDisappear {
             stopPlayback()
@@ -75,9 +83,9 @@ public struct Relive3DPlaybackView: View {
                 Annotation("起點", coordinate: start.coordinate) {
                     VStack(spacing: 2) {
                         Image(systemName: "flag.fill")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
-                            .padding(6)
+                            .padding(5)
                             .background(Circle().fill(Color.green))
                             .shadow(radius: 3)
                         Text("起點")
@@ -94,9 +102,9 @@ public struct Relive3DPlaybackView: View {
                 Annotation("終點", coordinate: end.coordinate) {
                     VStack(spacing: 2) {
                         Image(systemName: "flag.checkered")
-                            .font(.system(size: 13, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.white)
-                            .padding(6)
+                            .padding(5)
                             .background(Circle().fill(Color.orange))
                             .shadow(radius: 3)
                         Text("終點")
@@ -108,53 +116,59 @@ public struct Relive3DPlaybackView: View {
                 }
             }
             
-            // Animated Rider Avatar with User Custom Square Avatar and Nickname Tag
+            // Animated Rider Avatar with User Circular Avatar (Smaller, Sleek, Glowing)
             if let liveCoord = currentInterpolatedCoordinate ?? track.points.first?.coordinate {
                 Annotation("騎乘者", coordinate: liveCoord) {
-                    VStack(spacing: 3) {
-                        // User Nickname Bubble with Live Speed
-                        HStack(spacing: 4) {
+                    VStack(spacing: 2) {
+                        // Compact Nickname & Speed Capsule
+                        HStack(spacing: 3) {
                             Image(systemName: "figure.outdoor.cycle")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.orange)
-                            Text(profileStore.profile.nickname)
-                                .font(.system(size: 10, weight: .heavy))
+                            Text(profileStore.profile.nickname.isEmpty ? "騎士" : profileStore.profile.nickname)
+                                .font(.system(size: 9, weight: .heavy))
                                 .foregroundColor(.white)
                             if let pt = currentEstimatedPoint, let spd = pt.speedKmh, spd > 0 {
                                 Text(String(format: "%.0f km/h", spd))
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .font(.system(size: 8, weight: .bold, design: .rounded))
                                     .foregroundColor(.yellow)
                             }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2.5)
                         .background(Color.black.opacity(0.85), in: Capsule())
-                        .shadow(color: .black.opacity(0.5), radius: 3)
+                        .shadow(color: .black.opacity(0.4), radius: 2)
                         
-                        // Square Avatar with Neon Orange Border
+                        // Circular Small Avatar with Neon Glow Ring (Outer 26pt, Inner 22pt)
                         ZStack {
-                            RoundedRectangle(cornerRadius: 8)
+                            Circle()
                                 .fill(LinearGradient(colors: [.orange, .yellow], startPoint: .topLeading, endPoint: .bottomTrailing))
-                                .frame(width: 36, height: 36)
-                                .shadow(color: .orange.opacity(0.5), radius: 4)
+                                .frame(width: 26, height: 26)
+                                .shadow(color: .orange.opacity(0.7), radius: 4)
                             
                             if let data = profileStore.profile.avatarData, let uiImg = UIImage(data: data) {
                                 Image(uiImage: uiImg)
                                     .resizable()
                                     .scaledToFill()
-                                    .frame(width: 31, height: 31)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    .frame(width: 22, height: 22)
+                                    .clipShape(Circle())
                             } else {
                                 ZStack {
                                     Color.black.opacity(0.85)
-                                    Image(systemName: "person.fill")
-                                        .font(.system(size: 16))
-                                        .foregroundColor(.white)
+                                    Image(systemName: "figure.outdoor.cycle")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(.orange)
                                 }
-                                .frame(width: 31, height: 31)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .frame(width: 22, height: 22)
+                                .clipShape(Circle())
                             }
                         }
+                        
+                        // Ground anchor pointer dot
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 4, height: 4)
+                            .shadow(color: .orange, radius: 2)
                     }
                 }
             }
@@ -164,15 +178,15 @@ public struct Relive3DPlaybackView: View {
                 Annotation(wpt.name, coordinate: wpt.coordinate) {
                     VStack(spacing: 2) {
                         Image(systemName: wpt.iconName)
-                            .font(.system(size: 13, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundColor(.yellow)
-                            .padding(6)
+                            .padding(5)
                             .background(Circle().fill(Color.black.opacity(0.75)))
                             .shadow(radius: 2)
                         Text(wpt.name)
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 8, weight: .bold))
                             .foregroundColor(.white)
-                            .padding(.horizontal, 5)
+                            .padding(.horizontal, 4)
                             .padding(.vertical, 2)
                             .background(.ultraThinMaterial, in: Capsule())
                     }
@@ -198,107 +212,117 @@ public struct Relive3DPlaybackView: View {
                     }
                 }
             }
-            .mapStyle(.standard(elevation: .realistic))
+            .mapStyle(mapStyleSelection == .imagery ? .imagery(elevation: .realistic) : .standard(elevation: .realistic))
             
-            VStack(spacing: 12) {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "figure.stand")
-                        .font(.system(size: 40))
-                        .foregroundColor(.orange)
-                    Text("原地記錄活動")
-                        .font(.headline.bold())
-                    Text("本次運動為原地停留記錄（總位移小於 30 公尺），尚無連續位移軌跡供 3D 動態巡航重播。")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+            VStack {
+                HStack {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Circle().fill(Color.black.opacity(0.6)))
+                    }
+                    Spacer()
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
-                .shadow(radius: 6)
                 .padding()
+                
                 Spacer()
+                
+                Text("此活動無足夠位移軌跡，無法進行 3D 巡航重播。")
+                    .font(.subheadline)
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.bottom, 40)
             }
         }
     }
     
-    // MARK: - Current Interpolated Point
-    private var currentEstimatedPoint: RoutePoint? {
-        guard !track.points.isEmpty else { return nil }
-        let idx = min(Int(progress), track.points.count - 1)
-        return track.points[idx]
-    }
-    
-    // MARK: - Top Flight Info HUD with High-Contrast Dismiss Button
+    // MARK: - Top Flight HUD
     private var topFlightInfoHUD: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Button {
-                stopPlayback()
                 dismiss()
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 32, weight: .medium))
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.white)
-                    .background(Circle().fill(Color.black.opacity(0.6)))
-                    .shadow(radius: 4)
+                    .padding(8)
+                    .background(.ultraThinMaterial, in: Circle())
             }
             .buttonStyle(.plain)
             
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
                     Circle()
                         .fill(isPlaying ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
-                    Text(isPlaying ? "3D 全景重播中" : "3D 全景已暫停")
-                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 7, height: 7)
+                    Text(isPlaying ? "3D 巡航中" : "已暫停")
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.white)
                 }
                 
-                Text(track.title.isEmpty ? "運動記錄重播" : track.title)
+                Text(track.title.isEmpty ? "運動重播" : track.title)
                     .font(.subheadline.bold())
                     .foregroundColor(.white)
                     .lineLimit(1)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             
             Spacer()
             
             if let pt = currentEstimatedPoint {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     VStack(alignment: .trailing, spacing: 1) {
                         Text("海拔")
-                            .font(.system(size: 9))
+                            .font(.system(size: 8))
                             .foregroundColor(.white.opacity(0.8))
                         Text("\(Int(pt.elevation)) m")
-                            .font(.system(size: 13, weight: .heavy, design: .rounded))
+                            .font(.system(size: 12, weight: .heavy, design: .rounded))
                             .foregroundColor(.yellow)
                     }
                     
                     VStack(alignment: .trailing, spacing: 1) {
                         Text("時速")
-                            .font(.system(size: 9))
+                            .font(.system(size: 8))
                             .foregroundColor(.white.opacity(0.8))
                         Text(String(format: "%.1f", pt.speedKmh ?? 0.0))
-                            .font(.system(size: 13, weight: .heavy, design: .rounded))
+                            .font(.system(size: 12, weight: .heavy, design: .rounded))
                             .foregroundColor(.white)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
             
+            // Camera Mode Toggle: Follow Rider vs Overview
             Button {
-                recenterPanoramicCamera()
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    if cameraMode == .followRider {
+                        cameraMode = .overview
+                        zoomToOverview()
+                    } else {
+                        cameraMode = .followRider
+                        zoomToRider(animated: true)
+                    }
+                }
             } label: {
-                Image(systemName: "arrow.triangle.2.circlepath.camera")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(8)
-                    .background(.ultraThinMaterial, in: Circle())
+                HStack(spacing: 4) {
+                    Image(systemName: cameraMode == .followRider ? "scope" : "map")
+                        .font(.system(size: 11, weight: .bold))
+                    Text(cameraMode == .followRider ? "追隨騎士" : "全景俯瞰")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.85), in: Capsule())
             }
             .buttonStyle(.plain)
         }
@@ -306,7 +330,7 @@ public struct Relive3DPlaybackView: View {
     
     // MARK: - Bottom Playback Controls
     private var bottomPlaybackControls: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             // Map Style Toggle
             Picker("地圖樣式", selection: $mapStyleSelection) {
                 ForEach(PlaybackMapStyle.allCases, id: \.self) { style in
@@ -318,7 +342,7 @@ public struct Relive3DPlaybackView: View {
             // Progress Scrubbing Slider
             HStack(spacing: 10) {
                 Text("0.0 km")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.secondary)
                 
                 Slider(
@@ -327,6 +351,9 @@ public struct Relive3DPlaybackView: View {
                         set: { newProg in
                             progress = newProg
                             computeInterpolatedCoordinate()
+                            if cameraMode == .followRider {
+                                zoomToRider(animated: false)
+                            }
                         }
                     ),
                     in: 0...Double(max(1, track.points.count - 1))
@@ -334,23 +361,26 @@ public struct Relive3DPlaybackView: View {
                 .tint(.orange)
                 
                 Text(String(format: "%.1f km", track.totalDistanceKm))
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.secondary)
             }
             
-            // Media Controls Row: Centered & Balanced
+            // Media Controls Row
             HStack(alignment: .center) {
                 Button {
                     progress = 0.0
                     computeInterpolatedCoordinate()
+                    if cameraMode == .followRider {
+                        zoomToRider(animated: true)
+                    }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "backward.fill")
-                        Text("回到起點")
+                        Text("起點")
                     }
                     .font(.caption.bold())
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 7)
                 }
                 .buttonStyle(.bordered)
                 .tint(.primary)
@@ -361,7 +391,7 @@ public struct Relive3DPlaybackView: View {
                     togglePlayback()
                 } label: {
                     Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 46))
+                        .font(.system(size: 44))
                         .foregroundColor(.orange)
                 }
                 .buttonStyle(.plain)
@@ -375,24 +405,45 @@ public struct Relive3DPlaybackView: View {
                     Text("3x").tag(3.0)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 145)
+                .frame(width: 140)
             }
         }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-        .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
     }
     
-    // MARK: - Panoramic Camera Setup & Playback Engine
-    private func initializePanoramicCamera() {
+    // MARK: - Camera Control
+    private func initializeCamera() {
         guard !track.points.isEmpty else { return }
         currentInterpolatedCoordinate = track.points.first?.coordinate
-        recenterPanoramicCamera()
+        computeInterpolatedCoordinate()
+        if cameraMode == .followRider {
+            zoomToRider(animated: false)
+        } else {
+            zoomToOverview()
+        }
     }
     
-    private func recenterPanoramicCamera() {
+    private func zoomToRider(animated: Bool) {
+        guard let coord = currentInterpolatedCoordinate ?? track.points.first?.coordinate else { return }
+        let camera = MapCamera(
+            centerCoordinate: coord,
+            distance: 1400, // 3D Satellite Flyover altitude
+            heading: currentHeading,
+            pitch: 45 // 3D dynamic perspective
+        )
+        if animated {
+            withAnimation(.easeInOut(duration: 0.6)) {
+                self.cameraPosition = .camera(camera)
+            }
+        } else {
+            self.cameraPosition = .camera(camera)
+        }
+    }
+    
+    private func zoomToOverview() {
         guard !track.points.isEmpty else { return }
-        
         let lats = track.points.map(\.latitude)
         let lons = track.points.map(\.longitude)
         guard let minLat = lats.min(), let maxLat = lats.max(),
@@ -402,7 +453,6 @@ public struct Relive3DPlaybackView: View {
             latitude: (minLat + maxLat) / 2.0,
             longitude: (minLon + maxLon) / 2.0
         )
-        
         let spanLat = max(0.015, (maxLat - minLat) * 1.5)
         let spanLon = max(0.015, (maxLon - minLon) * 1.5)
         
@@ -433,10 +483,10 @@ public struct Relive3DPlaybackView: View {
         let frameDuration = 1.0 / frameRate
         let totalPts = Double(track.points.count)
         
-        // Adaptive replay duration (40~90s for standard replay)
-        let baseReplaySeconds: Double = max(40.0, min(90.0, totalPts / 6.0))
-        let baseStepPerSecond = max(0.25, totalPts / baseReplaySeconds)
+        let baseReplaySeconds: Double = max(35.0, min(80.0, totalPts / 6.0))
+        let baseStepPerSecond = max(0.3, totalPts / baseReplaySeconds)
         
+        frameCounter = 0
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: frameDuration, repeats: true) { _ in
             let step = (baseStepPerSecond * self.playbackSpeed) * frameDuration
@@ -449,6 +499,21 @@ public struct Relive3DPlaybackView: View {
                 self.progress = maxProgress
                 self.computeInterpolatedCoordinate()
                 self.stopPlayback()
+            }
+            
+            self.frameCounter += 1
+            // Smoothly update camera focus on rider every 5 frames (~6 times/sec) to avoid tile thrashing
+            if self.cameraMode == .followRider && self.frameCounter % 5 == 0 {
+                if let coord = self.currentInterpolatedCoordinate {
+                    withAnimation(.linear(duration: frameDuration * 5.0)) {
+                        self.cameraPosition = .camera(MapCamera(
+                            centerCoordinate: coord,
+                            distance: 1400,
+                            heading: self.currentHeading,
+                            pitch: 45
+                        ))
+                    }
+                }
             }
         }
     }
@@ -472,5 +537,27 @@ public struct Relive3DPlaybackView: View {
         let lat = p0.latitude + (p1.latitude - p0.latitude) * fraction
         let lon = p0.longitude + (p1.longitude - p0.longitude) * fraction
         self.currentInterpolatedCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        
+        // Calculate heading from p0 to p1
+        if i0 != i1 {
+            let lat1 = p0.latitude * .pi / 180.0
+            let lon1 = p0.longitude * .pi / 180.0
+            let lat2 = p1.latitude * .pi / 180.0
+            let lon2 = p1.longitude * .pi / 180.0
+            let dLon = lon2 - lon1
+            let y = sin(dLon) * cos(lat2)
+            let x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon)
+            let rawBearing = (atan2(y, x) * 180.0 / .pi + 360.0).truncatingRemainder(dividingBy: 360.0)
+            
+            // Smooth heading transition
+            let diff = (rawBearing - self.currentHeading + 540.0).truncatingRemainder(dividingBy: 360.0) - 180.0
+            self.currentHeading = (self.currentHeading + diff * 0.2 + 360.0).truncatingRemainder(dividingBy: 360.0)
+        }
+    }
+    
+    private var currentEstimatedPoint: RoutePoint? {
+        guard !track.points.isEmpty else { return nil }
+        let idx = min(Int(progress), track.points.count - 1)
+        return track.points[idx]
     }
 }
