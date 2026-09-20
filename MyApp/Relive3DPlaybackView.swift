@@ -10,7 +10,13 @@ public struct Relive3DPlaybackView: View {
         case overview = "🗺️ 全景鳥瞰"
     }
     
+    public enum PlaybackMapStyle: String, CaseIterable {
+        case imagery = "3D 衛星"
+        case standard = "Apple 標準"
+    }
+    
     @State private var cameraMode: CameraViewMode = .followDrone
+    @State private var mapStyleSelection: PlaybackMapStyle = .imagery
     @State private var progress: Double = 0.0
     @State private var isPlaying: Bool = false
     @State private var playbackSpeed: Double = 1.0 // 0.5x, 1x, 2x, 3x
@@ -38,13 +44,13 @@ public struct Relive3DPlaybackView: View {
             }
             
             // Map Tile Loading Indicator (Warm-up buffer)
-            if isMapWarmingUp {
+            if isMapWarmingUp && mapStyleSelection == .imagery {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
                         ProgressView()
                             .tint(.white)
-                        Text("3D 衛星與地形圖資緩衝中...")
+                        Text("3D 衛星空照圖資載入中...")
                             .font(.caption.bold())
                             .foregroundColor(.white)
                     }
@@ -74,8 +80,7 @@ public struct Relive3DPlaybackView: View {
         .edgesIgnoringSafeArea(track.points.count > 1 ? .bottom : [])
         .onAppear {
             initializePlaybackPosition()
-            // Allow 1.2s for initial high-res satellite 3D mesh tiles to stream before action
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 withAnimation {
                     isMapWarmingUp = false
                 }
@@ -145,7 +150,7 @@ public struct Relive3DPlaybackView: View {
                 }
             }
         }
-        .mapStyle(.imagery(elevation: .realistic))
+        .mapStyle(mapStyleSelection == .imagery ? .imagery(elevation: .realistic) : .standard(elevation: .realistic))
         .edgesIgnoringSafeArea(.all)
     }
     
@@ -302,9 +307,10 @@ public struct Relive3DPlaybackView: View {
     
     // MARK: - Bottom Playback Controls
     private var bottomPlaybackControls: some View {
-        VStack(spacing: 10) {
-            // Camera Mode Picker
-            HStack {
+        VStack(spacing: 12) {
+            // Mode Selectors Row: Camera Mode & Map Style Toggle
+            HStack(spacing: 10) {
+                // Camera Mode Picker
                 Picker("鏡頭模式", selection: $cameraMode) {
                     ForEach(CameraViewMode.allCases, id: \.self) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -314,6 +320,14 @@ public struct Relive3DPlaybackView: View {
                 .onChange(of: cameraMode) { _ in
                     updateSmoothCamera()
                 }
+                
+                // Map Style Toggle (Satellite vs Standard Apple Maps)
+                Picker("地圖樣式", selection: $mapStyleSelection) {
+                    ForEach(PlaybackMapStyle.allCases, id: \.self) { style in
+                        Text(style.rawValue).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
             
             // Progress Scrubbing Slider
@@ -340,32 +354,40 @@ public struct Relive3DPlaybackView: View {
                     .foregroundColor(.secondary)
             }
             
-            // Media Controls Row
-            HStack(spacing: 16) {
-                // Play / Pause Button
-                Button {
-                    togglePlayback()
-                } label: {
-                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 42))
-                        .foregroundColor(.orange)
-                }
-                .buttonStyle(.plain)
-                
-                // Replay from start
+            // Media Controls Row: Centered and Balanced
+            HStack(alignment: .center) {
+                // Replay from start (Centered icon and text)
                 Button {
                     progress = 0.0
                     computeInterpolatedCoordinate()
                     updateSmoothCamera()
                 } label: {
-                    Label("重頭", systemImage: "backward.fill")
-                        .font(.caption.bold())
+                    HStack(spacing: 4) {
+                        Image(systemName: "backward.fill")
+                        Text("回到起點")
+                    }
+                    .font(.caption.bold())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                 }
                 .buttonStyle(.bordered)
+                .tint(.primary)
                 
                 Spacer()
                 
-                // Slow / Standard Speed Selector (0.5x, 1x, 2x, 3x)
+                // Play / Pause Button (Hero Center)
+                Button {
+                    togglePlayback()
+                } label: {
+                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 46))
+                        .foregroundColor(.orange)
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                // Playback Speed Selector (0.5x, 1x, 2x, 3x)
                 Picker("倍速", selection: $playbackSpeed) {
                     Text("0.5x").tag(0.5)
                     Text("1x").tag(1.0)
@@ -373,7 +395,7 @@ public struct Relive3DPlaybackView: View {
                     Text("3x").tag(3.0)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 175)
+                .frame(width: 145)
             }
         }
         .padding(14)
@@ -414,15 +436,14 @@ public struct Relive3DPlaybackView: View {
         }
         isPlaying = true
         
-        let frameRate: Double = 24.0
+        let frameRate: Double = 30.0
         let frameDuration = 1.0 / frameRate
         
         let totalPts = Double(track.points.count)
         
-        // 慢速細緻航拍時長控制：
-        // 設定基準巡航時長為 75~120 秒，確保網路有充足時間即時下載 3D 衛星與地形高程瓦片
-        let baseReplaySeconds: Double = max(75.0, min(130.0, Double(track.points.count) / 6.0))
-        let baseStepPerSecond = max(0.15, totalPts / baseReplaySeconds)
+        // 基準巡航時長控制 (依點位量自適應 60~110 秒)
+        let baseReplaySeconds: Double = max(60.0, min(110.0, Double(track.points.count) / 7.0))
+        let baseStepPerSecond = max(0.2, totalPts / baseReplaySeconds)
         
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: frameDuration, repeats: true) { _ in
@@ -453,7 +474,7 @@ public struct Relive3DPlaybackView: View {
         updateSmoothCamera()
     }
     
-    /// 精準內插即時座標，並透過前瞻預判航向
+    /// 精準平滑內插即時座標，並透過前瞻距離（200m~350m）預判航向，徹底解決 2x/3x 鏡頭抖動
     private func computeInterpolatedCoordinate() {
         guard track.points.count > 1 else { return }
         let count = track.points.count
@@ -470,16 +491,30 @@ public struct Relive3DPlaybackView: View {
         let live = CLLocationCoordinate2D(latitude: lat, longitude: lon)
         self.currentInterpolatedCoordinate = live
         
-        // 2. 前瞻航向計算 (Look-Ahead Bearing)
-        let lookAheadIdx = min(i0 + 3, count - 1)
-        let lookAheadPoint = track.points[lookAheadIdx]
-        let targetHeading = calculateBearing(from: live, to: lookAheadPoint.coordinate)
+        // 2. 前瞻距離航向計算 (Look-Ahead by Distance ~250m)
+        // 依照物理距離而非固定點數前瞻，有效防止 GPS 微小噪點引發航向高頻擺動
+        let liveLoc = CLLocation(latitude: live.latitude, longitude: live.longitude)
+        var targetCoord = p1.coordinate
+        var accumulatedDist: Double = 0.0
         
-        // 3. 最短圓周角阻尼濾波
+        for idx in (i0 + 1)..<count {
+            let candidate = track.points[idx]
+            accumulatedDist += liveLoc.distance(from: CLLocation(latitude: candidate.latitude, longitude: candidate.longitude))
+            if accumulatedDist >= 220.0 || idx == count - 1 {
+                targetCoord = candidate.coordinate
+                break
+            }
+        }
+        
+        let targetHeading = calculateBearing(from: live, to: targetCoord)
+        
+        // 3. 最短圓周角阻尼濾波（倍速越高動態微調平滑係數，消除畫面劇烈跳變）
         var diff = targetHeading - currentHeading
         while diff < -180.0 { diff += 360.0 }
         while diff > 180.0 { diff -= 360.0 }
-        currentHeading = (currentHeading + diff * 0.35 + 360.0).truncatingRemainder(dividingBy: 360.0)
+        
+        let dampingFactor = min(0.22, 0.32 / max(1.0, playbackSpeed * 0.75))
+        currentHeading = (currentHeading + diff * dampingFactor + 360.0).truncatingRemainder(dividingBy: 360.0)
     }
     
     private func calculateBearing(from start: CLLocationCoordinate2D, to end: CLLocationCoordinate2D) -> Double {
@@ -494,7 +529,7 @@ public struct Relive3DPlaybackView: View {
         return (atan2(y, x) * 180.0 / .pi + 360.0).truncatingRemainder(dividingBy: 360.0)
     }
     
-    /// 即時更新相機：跟隨模式採 1450m 視距與 34° 俯仰角，提供最佳圖資串流效率與壯闊景深
+    /// 即時更新相機：跟隨模式採 1350m 視距與 32° 俯仰角，提供最佳圖資串流效率與壯闊景深
     private func updateSmoothCamera() {
         guard let live = currentInterpolatedCoordinate else { return }
         
@@ -502,16 +537,16 @@ public struct Relive3DPlaybackView: View {
         case .followDrone:
             let camera = MapCamera(
                 centerCoordinate: live,
-                distance: 1450, // 擴大相機距離至 1450m，降低瓦片層級負擔，確保 3D 衛星網格隨傳隨顯
+                distance: 1350,
                 heading: currentHeading,
-                pitch: 34.0 // 舒適俯仰角
+                pitch: 32.0
             )
             self.cameraPosition = .camera(camera)
             
         case .overview:
             let camera = MapCamera(
                 centerCoordinate: live,
-                distance: 2600, // 全景鳥瞰
+                distance: 2500,
                 heading: 0.0,
                 pitch: 0.0
             )

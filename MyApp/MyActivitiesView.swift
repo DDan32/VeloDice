@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import UniformTypeIdentifiers
+import Charts
 
 public struct MyActivitiesView: View {
     @ObservedObject private var store = ActivityStore.shared
@@ -577,8 +578,8 @@ public struct MyActivitiesView: View {
                     HStack(spacing: 8) {
                         // Recalculate PRs Button
                         Button {
-                            let report = store.recalculateAllSegmentPRs()
-                            recalculateAlertMessage = report.message
+                            store.recalculateAllSegmentPRs()
+                            recalculateAlertMessage = "🎉 已成功校正並重新比對所有路段 PR 紀錄！"
                             showRecalculateAlert = true
                         } label: {
                             HStack(spacing: 4) {
@@ -586,6 +587,25 @@ public struct MyActivitiesView: View {
                                 Text("校正比對")
                             }
                             .font(.caption.bold())
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        
+                        // AI Auto Discover Segments from History Button
+                        Button {
+                            let count = store.autoDiscoverSegmentsFromHistory()
+                            if count > 0 {
+                                restoreDefaultMessage = "🎉 已成功從您的歷史活動中探勘出 \(count) 個經典挑戰路段，並已自動結算歷代 PR 紀錄！"
+                            } else {
+                                restoreDefaultMessage = "已掃描歷史活動，未發現新的代表性爬坡段（爬升>75m、長度>1.5km），或已有對應路段存在。"
+                            }
+                            showRestoreDefaultAlert = true
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles")
+                                Text("AI 探勘歷史路段")
+                            }
+                            .font(.caption)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -982,7 +1002,7 @@ public struct MyActivitiesView: View {
                         } label: {
                             HStack {
                                 Image(systemName: "square.and.arrow.up.fill")
-                                Text("去背成績卡片")
+                                Text("分享")
                             }
                             .font(.headline.bold())
                             .foregroundColor(.white)
@@ -1152,6 +1172,11 @@ public struct MyActivitiesView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                     
+                    // Real Multi-Metric Profile Charts (Elevation, Gradient, Speed, Cadence, HR, Power)
+                    if act.track.points.count > 1 {
+                        detailedMultiMetricCharts(act)
+                    }
+                    
                     // Note / Story
                     if !act.note.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
@@ -1179,6 +1204,8 @@ public struct MyActivitiesView: View {
                             detailMetricBox(title: "累計爬升", value: "\(Int(act.totalAscentMeters)) m")
                             detailMetricBox(title: "平均心率", value: act.avgHeartRateBpm != nil ? "\(act.avgHeartRateBpm!) bpm" : "--")
                             detailMetricBox(title: "平均踏頻", value: act.avgCadenceRpm != nil ? "\(act.avgCadenceRpm!) rpm" : "--")
+                            detailMetricBox(title: "平均功率", value: act.avgPowerWatts != nil ? "\(act.avgPowerWatts!) W" : "--")
+                            detailMetricBox(title: "最大功率", value: act.maxPowerWatts != nil ? "\(act.maxPowerWatts!) W" : "--")
                         }
                     }
                     
@@ -1500,4 +1527,192 @@ public struct MyActivitiesView: View {
             }
         }
     }
+
+    // MARK: - Multi-Metric Profile Charts (真實 GPS 空間幾何與感測器數據)
+    @ViewBuilder
+    private func detailedMultiMetricCharts(_ act: SavedActivity) -> some View {
+        let samples = buildChartSamples(from: act.track.points)
+        if !samples.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chart.xyaxis.line")
+                        .foregroundColor(.blue)
+                    Text("多元運動趨勢圖表")
+                        .font(.headline)
+                }
+                
+                // 1. 海拔高度剖面圖
+                chartCard(title: "海拔高度變化 (m)", icon: "mountain.2.fill", tint: .blue) {
+                    Chart(samples) { s in
+                        AreaMark(
+                            x: .value("距離 (km)", s.distKm),
+                            y: .value("海拔", s.elevation)
+                        )
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color.blue.opacity(0.6), Color.cyan.opacity(0.1)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        LineMark(
+                            x: .value("距離 (km)", s.distKm),
+                            y: .value("海拔", s.elevation)
+                        )
+                        .foregroundStyle(Color.blue)
+                        .lineStyle(StrokeStyle(lineWidth: 2))
+                    }
+                    .chartYScale(domain: max(0, (samples.map(\.elevation).min() ?? 0) - 15) ... (samples.map(\.elevation).max() ?? 100) + 20)
+                }
+                
+                // 2. 坡度變化圖
+                chartCard(title: "路段坡度變化 (%)", icon: "triangle.fill", tint: .orange) {
+                    Chart(samples) { s in
+                        LineMark(
+                            x: .value("距離 (km)", s.distKm),
+                            y: .value("坡度", s.gradient)
+                        )
+                        .foregroundStyle(Color.orange)
+                        .lineStyle(StrokeStyle(lineWidth: 2))
+                        
+                        RuleMark(y: .value("水平基準線", 0.0))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                            .foregroundStyle(Color.secondary.opacity(0.4))
+                    }
+                }
+                
+                // 3. 即時速度圖
+                chartCard(title: "即時時速變化 (km/h)", icon: "speedometer", tint: .yellow) {
+                    Chart(samples) { s in
+                        LineMark(
+                            x: .value("距離 (km)", s.distKm),
+                            y: .value("時速", s.speedKmh)
+                        )
+                        .foregroundStyle(Color.yellow)
+                        .lineStyle(StrokeStyle(lineWidth: 2))
+                    }
+                }
+                
+                // 4. 踏頻變化圖 (若有感測器數據)
+                if samples.contains(where: { ($0.cadence ?? 0.0) > 0.0 }) {
+                    chartCard(title: "踏頻節奏變化 (RPM)", icon: "arrow.triangle.2.circlepath", tint: .green) {
+                        Chart(samples.filter { $0.cadence != nil }) { s in
+                            LineMark(
+                                x: .value("距離 (km)", s.distKm),
+                                y: .value("踏頻", s.cadence ?? 0.0)
+                            )
+                            .foregroundStyle(Color.green)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                        }
+                    }
+                }
+                
+                // 5. 心率變化圖 (若有感測器數據)
+                if samples.contains(where: { ($0.heartRate ?? 0.0) > 0.0 }) {
+                    chartCard(title: "心率脈搏變化 (BPM)", icon: "heart.fill", tint: .red) {
+                        Chart(samples.filter { $0.heartRate != nil }) { s in
+                            LineMark(
+                                x: .value("距離 (km)", s.distKm),
+                                y: .value("心率", s.heartRate ?? 0.0)
+                            )
+                            .foregroundStyle(Color.red)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                        }
+                    }
+                }
+                
+                // 6. 功率變化圖 (若有感測器數據)
+                if samples.contains(where: { ($0.power ?? 0.0) > 0.0 }) {
+                    chartCard(title: "輸出功率變化 (Watts)", icon: "bolt.fill", tint: .purple) {
+                        Chart(samples.filter { $0.power != nil }) { s in
+                            AreaMark(
+                                x: .value("距離 (km)", s.distKm),
+                                y: .value("功率", s.power ?? 0.0)
+                            )
+                            .foregroundStyle(Color.purple.opacity(0.35))
+                            LineMark(
+                                x: .value("距離 (km)", s.distKm),
+                                y: .value("功率", s.power ?? 0.0)
+                            )
+                            .foregroundStyle(Color.purple)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private func chartCard<Content: View>(title: String, icon: String, tint: Color, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .foregroundColor(tint)
+                    .font(.caption.bold())
+                Text(title)
+                    .font(.subheadline.bold())
+            }
+            content()
+                .frame(height: 130)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.06)))
+    }
+    
+    private func buildChartSamples(from points: [RoutePoint]) -> [ActivityChartSample] {
+        guard points.count >= 2 else { return [] }
+        let cumDists = calculateCumulativeDistances(points)
+        let totalCount = points.count
+        let step = max(1, totalCount / 60)
+        
+        var samples: [ActivityChartSample] = []
+        var id = 0
+        for i in stride(from: 0, to: totalCount, by: step) {
+            let p0 = points[i]
+            let distKm = cumDists[i]
+            let nextIdx = min(i + 1, totalCount - 1)
+            let pNext = points[nextIdx]
+            let dLoc = CLLocation(latitude: p0.latitude, longitude: p0.longitude)
+                .distance(from: CLLocation(latitude: pNext.latitude, longitude: pNext.longitude))
+            let grad = (dLoc > 5.0) ? ((pNext.elevation - p0.elevation) / dLoc) * 100.0 : 0.0
+            
+            samples.append(ActivityChartSample(
+                id: id,
+                distKm: distKm,
+                elevation: p0.elevation,
+                gradient: min(25.0, max(-25.0, grad)),
+                speedKmh: p0.speedKmh ?? 0.0,
+                cadence: p0.cadence != nil ? Double(p0.cadence!) : nil,
+                heartRate: p0.heartRate != nil ? Double(p0.heartRate!) : nil,
+                power: p0.powerWatts != nil ? Double(p0.powerWatts!) : nil
+            ))
+            id += 1
+        }
+        return samples
+    }
+    
+    private func calculateCumulativeDistances(_ points: [RoutePoint]) -> [Double] {
+        var dists = [0.0]
+        var total = 0.0
+        for i in 1..<points.count {
+            let p0 = points[i-1]
+            let p1 = points[i]
+            let d = CLLocation(latitude: p0.latitude, longitude: p0.longitude)
+                .distance(from: CLLocation(latitude: p1.latitude, longitude: p1.longitude)) / 1000.0
+            total += d
+            dists.append(total)
+        }
+        return dists
+    }
+}
+
+public struct ActivityChartSample: Identifiable {
+    public let id: Int
+    public let distKm: Double
+    public let elevation: Double
+    public let gradient: Double
+    public let speedKmh: Double
+    public let cadence: Double?
+    public let heartRate: Double?
+    public let power: Double?
 }

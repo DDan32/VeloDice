@@ -33,7 +33,7 @@ public struct ContentView: View {
                         .padding(.vertical, 6)
                 }
             }
-            .navigationTitle("VeloDice 騎跡")
+            .navigationTitle(AppConstants.appName)
             .listStyle(.sidebar)
             .frame(minWidth: 220)
         } detail: {
@@ -51,7 +51,8 @@ public struct ContentView: View {
                 .tag(AppNavigationTab.routePlanning)
             
             LiveHUDDashboardView(track: currentTrack) { finishedTrack in
-                self.currentTrack = finishedTrack
+                // 停止記錄並儲存後，清空正在地圖導航的規劃路線
+                self.currentTrack = CleanRouteHelper.shared.emptyTrack()
                 self.selectedTab = .myActivities
             }
             .tabItem {
@@ -78,7 +79,7 @@ public struct ContentView: View {
             RoutePlannerView(currentTrack: $currentTrack)
         case .liveHUD:
             LiveHUDDashboardView(track: currentTrack) { finishedTrack in
-                self.currentTrack = finishedTrack
+                self.currentTrack = CleanRouteHelper.shared.emptyTrack()
                 self.selectedTab = .myActivities
             }
         case .myActivities:

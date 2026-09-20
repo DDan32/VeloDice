@@ -9,6 +9,7 @@ public struct SaveWorkoutSheet: View {
     let totalAscentMeters: Double
     let avgHeartRate: Int?
     let avgCadence: Int?
+    let avgPowerWatts: Int?
     
     var onSaved: ((SavedActivity) -> Void)?
     var onDismiss: (() -> Void)?
@@ -27,6 +28,7 @@ public struct SaveWorkoutSheet: View {
         totalAscentMeters: Double,
         avgHeartRate: Int? = nil,
         avgCadence: Int? = nil,
+        avgPowerWatts: Int? = nil,
         onSaved: ((SavedActivity) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil
     ) {
@@ -37,12 +39,13 @@ public struct SaveWorkoutSheet: View {
         self.totalAscentMeters = totalAscentMeters
         self.avgHeartRate = avgHeartRate
         self.avgCadence = avgCadence
+        self.avgPowerWatts = avgPowerWatts
         self.onSaved = onSaved
         self.onDismiss = onDismiss
         
         let hour = Calendar.current.component(.hour, from: Date())
         let timePeriod = hour < 12 ? "早晨" : (hour < 18 ? "午後" : "夜間")
-        _activityTitle = State(initialValue: "\(timePeriod)運動 · \(Date().formatted(date: .abbreviated, time: .omitted))")
+        _activityTitle = State(initialValue: "\(timePeriod)騎行 · \(Date().formatted(date: .abbreviated, time: .omitted))")
     }
     
     public var body: some View {
@@ -126,7 +129,7 @@ public struct SaveWorkoutSheet: View {
                                 }
                             }
                         } else {
-                            Text("上傳今天拍的沿途美景，照片將整合至過往活動與去背分享中。")
+                            Text("上傳今天拍的沿途美景，照片將整合至過往活動與分享卡片中。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -207,7 +210,7 @@ public struct SaveWorkoutSheet: View {
         VStack(spacing: 14) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text("距離")
+                    Text("里程")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Text(String(format: "%.2f", distanceKm))
@@ -232,11 +235,15 @@ public struct SaveWorkoutSheet: View {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 summarySubMetric(title: "總歷時 (含紅綠燈)", value: formattedTime(durationSeconds))
                 summarySubMetric(title: "運動均速", value: String(format: "%.1f km/h", avgSpeed))
-                summarySubMetric(title: "累計爬升", value: "\(Int(totalAscentMeters)) m")
+                summarySubMetric(title: "累積爬升", value: "\(Int(totalAscentMeters)) m")
                 if let hr = avgHeartRate {
                     summarySubMetric(title: "平均心率", value: "\(hr) bpm")
-                } else if let cad = avgCadence {
+                }
+                if let cad = avgCadence {
                     summarySubMetric(title: "平均踏頻", value: "\(cad) rpm")
+                }
+                if let pow = avgPowerWatts {
+                    summarySubMetric(title: "平均功率", value: "\(pow) W")
                 }
             }
         }
@@ -259,7 +266,7 @@ public struct SaveWorkoutSheet: View {
         let avgSpeed = (distanceKm >= 0.03 && movingDurationSeconds >= 3) ? (distanceKm / (movingDurationSeconds / 3600.0)) : 0.0
         let maxSpd = finishedTrack.points.compactMap(\.speedKmh).filter({ $0 > 0 }).max() ?? 0.0
         
-        let defaultTitle = distanceKm >= 0.05 ? "我的運動記錄" : "原地運動記錄"
+        let defaultTitle = distanceKm >= 0.05 ? "我的騎行記錄" : "原地運動記錄"
         let finalTitle = activityTitle.trimmingCharacters(in: .whitespaces).isEmpty ? defaultTitle : activityTitle
         
         let newActivity = SavedActivity(
@@ -275,6 +282,7 @@ public struct SaveWorkoutSheet: View {
             totalAscentMeters: totalAscentMeters,
             avgHeartRateBpm: avgHeartRate,
             avgCadenceRpm: avgCadence,
+            avgPowerWatts: avgPowerWatts,
             photoDataList: loadedPhotoDataList
         )
         

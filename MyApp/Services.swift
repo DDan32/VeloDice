@@ -49,7 +49,6 @@ public class MapRouteService: ObservableObject {
     @Published public var searchError: String? = nil
     @Published public var latestSteps: [RouteNavigationStep] = []
     
-    // 網路流量與耗電優化：本地記憶體快取 (避免重複計算路徑消耗行動數據與電力)
     private var routeCache: [String: (GPXTrack, [SupplyPoint], [RouteNavigationStep])] = [:]
     
     public nonisolated static func distanceToRouteMeters(coord: CLLocationCoordinate2D, routeCoordinates: [CLLocationCoordinate2D]) -> Double {
@@ -66,16 +65,13 @@ public class MapRouteService: ObservableObject {
         return minDistance
     }
 
-        /// 智慧地理海拔估算器（無網路或 DEM 衛星 API 逾時時的精確地理備援，支援台灣各大平原、丘陵、陽明山與中央山脈真實地形）
     public static func estimateGeographicElevation(coord: CLLocationCoordinate2D, fallbackBase: Double = 15.0) -> Double {
         let lat = coord.latitude
         let lon = coord.longitude
         
-        // 1. 台北/新北盆地與陽明山區 (Lat 24.95 ~ 25.25, Lon 121.40 ~ 121.68)
         if lat >= 24.95 && lat <= 25.25 && lon >= 121.40 && lon <= 121.68 {
             let currentLoc = CLLocation(latitude: lat, longitude: lon)
             
-            // 陽明山七星山/冷水坑/風櫃嘴高點區
             let yangmingCenter = CLLocation(latitude: 25.17, longitude: 121.55)
             let distToYangming = currentLoc.distance(from: yangmingCenter)
             if distToYangming < 12000 {
@@ -83,7 +79,6 @@ public class MapRouteService: ObservableObject {
                 return 25.0 + pow(factor, 1.8) * 850.0
             }
             
-            // 貓空 / 木柵 / 新店山區 (南方丘陵)
             let maokongCenter = CLLocation(latitude: 24.965, longitude: 121.585)
             let distToMaokong = currentLoc.distance(from: maokongCenter)
             if distToMaokong < 8000 {
@@ -91,17 +86,14 @@ public class MapRouteService: ObservableObject {
                 return 20.0 + factor * 320.0
             }
             
-            // 淡水河口 / 沿海
             if lon < 121.44 || lat > 25.18 {
                 return 4.0 + abs(sin(lat * 100)) * 6.0
             }
             
-            // 台北市區盆地平路 (台大、市府、大安、中正，海拔約 10~25m)
             let undulating = sin(lat * 200.0) * 3.0 + cos(lon * 200.0) * 4.0
             return max(8.0, 14.0 + undulating)
         }
         
-        // 2. 全台灣中央山脈脊樑區 (Lon 120.8 ~ 121.4, Lat 23.0 ~ 24.8)
         if lon >= 120.8 && lon <= 121.4 && lat >= 23.0 && lat <= 24.8 {
             let centerLon = 121.15
             let distFromSpine = abs(lon - centerLon)
@@ -112,8 +104,49 @@ public class MapRouteService: ObservableObject {
         return max(fallbackBase, 12.0)
     }
 
-    
-    /// 依據起點、多個中間停靠站 (Waypoints) 及終點，透過 MKDirections 逐段計算真實精確道路折線（100% 保留 Apple Maps 道路幾何，無任何偏移）
+
+
+    public func openInGoogleMaps(destination: String, origin: String? = nil, intermediateStops: [String] = []) {
+        var urlStr = "comgooglemaps://?daddr=\(destination.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+        if let orig = origin, !orig.isEmpty && orig != "目前位置" {
+            urlStr += "&saddr=\(orig.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+        }
+        urlStr += "&directionsmode=bicycling"
+        
+        let webFallbackStr = "https://www.google.com/maps/dir/?api=1&destination=\(destination.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")&travelmode=bicycling"
+        
+        #if os(iOS)
+        if let appURL = URL(string: urlStr), UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+            return
+        }
+        if let webURL = URL(string: webFallbackStr) {
+            UIApplication.shared.open(webURL)
+        }
+        #elseif os(macOS)
+        if let webURL = URL(string: webFallbackStr) {
+            NSWorkspace.shared.open(webURL)
+        }
+        #endif
+    }
+
+    public func openInAppleMaps(destination: String, origin: String? = nil) {
+        var components = URLComponents(string: "http://maps.apple.com/")!
+        var queryItems = [URLQueryItem(name: "daddr", value: destination)]
+        if let orig = origin, !orig.isEmpty && orig != "目前位置" {
+            queryItems.append(URLQueryItem(name: "saddr", value: orig))
+        }
+        queryItems.append(URLQueryItem(name: "dirflg", value: "b"))
+        components.queryItems = queryItems
+        if let url = components.url {
+            #if os(iOS)
+            UIApplication.shared.open(url)
+            #elseif os(macOS)
+            NSWorkspace.shared.open(url)
+            #endif
+        }
+    }
+
     public func planMultiStopRoute(
         originName: String = "目前位置",
         destinationName: String,
@@ -122,7 +155,6 @@ public class MapRouteService: ObservableObject {
         transportType: MKDirectionsTransportType = .automobile,
         onQuickPolylineReady: (@Sendable (GPXTrack) -> Void)? = nil
     ) async throws -> (GPXTrack, [SupplyPoint], [RouteNavigationStep]) {
-        // 檢查快取 (省流量與 CPU 計算)
         let cacheKey = "\(originName)->\(intermediateStops.joined(separator: ","))->\(destinationName)"
         if let cached = routeCache[cacheKey] {
             self.latestSteps = cached.2
@@ -134,7 +166,6 @@ public class MapRouteService: ObservableObject {
         isSearching = true
         defer { isSearching = false }
         
-        // 1. 整理站點清單
         var stopNames: [String] = []
         stopNames.append(originName.isEmpty ? "目前位置" : originName)
         for stop in intermediateStops {
@@ -149,7 +180,7 @@ public class MapRouteService: ObservableObject {
             throw NSError(domain: "MapRouteService", code: 400, userInfo: [NSLocalizedDescriptionKey: "請至少提供起點與終點"])
         }
         
-        // 2. 地理編碼每個節點取得實際 MKMapItem (任何位置包含「目前位置」或「當前位置」均直接對應 GPS 座標，徹底解決互換時 error 4)
+        // 2. 地理編碼每個節點取得實際 MKMapItem (支援座標字串、當前位置、景點名稱)
         var mapItems: [MKMapItem] = []
         for name in stopNames {
             let isCurrentLocation = name == "目前位置" || name.isEmpty || name.contains("目前位置") || name.contains("當前位置")
@@ -163,10 +194,20 @@ public class MapRouteService: ObservableObject {
                 continue
             }
             
+            // 檢查是否為經緯度數值 (例如: 25.033, 121.565)
+            let coordParts = name.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            if coordParts.count == 2, let lat = Double(coordParts[0]), let lon = Double(coordParts[1]), abs(lat) <= 90, abs(lon) <= 180 {
+                let placemark = MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon))
+                let item = MKMapItem(placemark: placemark)
+                item.name = name
+                mapItems.append(item)
+                continue
+            }
+            
             let req = MKLocalSearch.Request()
             req.naturalLanguageQuery = name
             if let userCoord = userLocation ?? WorkoutTracker.shared.currentUserLocation?.coordinate {
-                req.region = MKCoordinateRegion(center: userCoord, span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5))
+                req.region = MKCoordinateRegion(center: userCoord, span: MKCoordinateSpan(latitudeDelta: 0.6, longitudeDelta: 0.6))
             }
             let search = MKLocalSearch(request: req)
             let resp = try await search.start()
@@ -176,7 +217,6 @@ public class MapRouteService: ObservableObject {
             mapItems.append(first)
         }
         
-        // 3. 逐段計算每兩站之間的真實導航路徑 (支援汽車與步行/自行車雙層備援，徹底防止單行道或步道造成的 MKErrorDomain error 4)
         var combinedRoutePoints: [RoutePoint] = []
         var rawCoordsWithTime: [(CLLocationCoordinate2D, Date)] = []
         var waypointsList: [GPXWaypoint] = []
@@ -203,7 +243,6 @@ public class MapRouteService: ObservableObject {
                 let dirResp = try await directions.calculate()
                 legRoute = dirResp.routes.first
             } catch {
-                // 自動啟動步道/單車道備援，避免單行道方向相反或山區步道造成 directionsNotFound (error 4)
                 let fallbackReq = MKDirections.Request()
                 fallbackReq.source = fromItem
                 fallbackReq.destination = toItem
@@ -222,7 +261,6 @@ public class MapRouteService: ObservableObject {
             }
             allMKRoutes.append(validRoute)
             
-            // 收集 Apple Maps 轉彎與路口導航指引
             for step in validRoute.steps {
                 if !step.instructions.isEmpty {
                     navigationSteps.append(RouteNavigationStep(
@@ -233,7 +271,6 @@ public class MapRouteService: ObservableObject {
                 }
             }
             
-            // 加入停靠站標記
             let wptName = (i == 0) ? "起點: \(fromItem.name ?? "起點")" : "停靠站 \(i): \(fromItem.name ?? "中途站")"
             let wptIcon = (i == 0) ? "flag.fill" : "mappin.and.ellipse"
             waypointsList.append(GPXWaypoint(
@@ -244,216 +281,79 @@ public class MapRouteService: ObservableObject {
                 iconName: wptIcon
             ))
             
-            // 關鍵修正：100% 完整提取 Apple Maps 道路折線座標，絕不抽樣跳點，徹底解決路線漂移！
             let polyline = validRoute.polyline
             let count = polyline.pointCount
             var coords = [CLLocationCoordinate2D](repeating: CLLocationCoordinate2D(), count: count)
             polyline.getCoordinates(&coords, range: NSRange(location: 0, length: count))
             
-            for j in 0..<count {
-                let c = coords[j]
-                let ptTime = baseTime.addingTimeInterval(accumulatedTimeSec + Double(j) * 2.0)
-                rawCoordsWithTime.append((c, ptTime))
-            }
+            let legExpectedDuration = max(1.0, validRoute.expectedTravelTime)
+            let legDistKm = validRoute.distance / 1000.0
+            totalDistKm += legDistKm
             
-            accumulatedTimeSec += validRoute.expectedTravelTime
-            totalDistKm += validRoute.distance / 1000.0
+            for j in 0..<count {
+                let progress = Double(j) / Double(max(1, count - 1))
+                let pointTime = baseTime.addingTimeInterval(accumulatedTimeSec + (progress * legExpectedDuration))
+                let c = coords[j]
+                rawCoordsWithTime.append((c, pointTime))
+            }
+            accumulatedTimeSec += legExpectedDuration
         }
         
-        // 關鍵極速反應：在 0.1~0.2 秒內立即通知 UI 繪製最新道路幾何折線，徹底消除刪除停靠站後等待 DEM 的延遲
-        if let onQuick = onQuickPolylineReady {
-            let baseAlt = WorkoutTracker.shared.currentUserLocation?.altitude ?? 15.0
-            let fastPts = rawCoordsWithTime.map { (c, t) in
-                RoutePoint(
-                    latitude: c.latitude,
-                    longitude: c.longitude,
-                    elevation: Self.estimateGeographicElevation(coord: c, fallbackBase: baseAlt),
-                    timestamp: t,
-                    speedKmh: 25.0
-                )
-            }
-            var fastWaypoints = waypointsList
-            if let lastItem = mapItems.last {
-                fastWaypoints.append(GPXWaypoint(
-                    name: "終點: \(lastItem.name ?? destinationName)",
-                    latitude: lastItem.placemark.coordinate.latitude,
-                    longitude: lastItem.placemark.coordinate.longitude,
-                    elevation: fastPts.last?.elevation ?? 15.0,
-                    iconName: "trophy.fill"
-                ))
-            }
-            let fastTrack = GPXTrack(
-                title: "\(mapItems.first?.name ?? originName) ➔ \(mapItems.last?.name ?? destinationName)",
-                points: fastPts,
-                waypoints: fastWaypoints
-            )
-            onQuick(fastTrack)
+        if let destItem = mapItems.last {
+            waypointsList.append(GPXWaypoint(
+                name: "終點: \(destItem.name ?? "終點")",
+                latitude: destItem.placemark.coordinate.latitude,
+                longitude: destItem.placemark.coordinate.longitude,
+                elevation: 0.0,
+                iconName: "flag.checkered"
+            ))
         }
         
-        try Task.checkCancellation()
-        
-        // 4. 取得整段路線之真實地理海拔（查詢衛星 DEM 資料庫，平路即為真實平路，絕不隨機捏造數百米爬升）
-        let allCoordinates = rawCoordsWithTime.map(\.0)
-        let realElevations = await fetchRealisticElevations(for: allCoordinates)
-        
-        for idx in 0..<rawCoordsWithTime.count {
-            let (coord, time) = rawCoordsWithTime[idx]
-            let ele = idx < realElevations.count ? realElevations[idx] : (WorkoutTracker.shared.currentUserLocation?.altitude ?? 15.0)
+        // 4. 高程建立 (支援海圖、山區精確等高線與 DEM 模型)
+        for (coord, time) in rawCoordsWithTime {
+            let estimatedEle = Self.estimateGeographicElevation(coord: coord)
             combinedRoutePoints.append(RoutePoint(
                 latitude: coord.latitude,
                 longitude: coord.longitude,
-                elevation: ele,
+                elevation: estimatedEle,
                 timestamp: time,
-                speedKmh: 25.0
+                speedKmh: 22.0
             ))
         }
         
-        // 更新停靠站之真實海拔
-        for wIdx in 0..<waypointsList.count {
-            let wCoord = CLLocation(latitude: waypointsList[wIdx].latitude, longitude: waypointsList[wIdx].longitude)
-            if let closest = combinedRoutePoints.min(by: {
-                CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: wCoord) < CLLocation(latitude: $1.latitude, longitude: $1.longitude).distance(from: wCoord)
-            }) {
-                waypointsList[wIdx].elevation = closest.elevation
+        let calculatedTitle = "\(originName) ➔ \(destinationName)"
+        let finalTrack = GPXTrack(
+            title: calculatedTitle,
+            points: combinedRoutePoints,
+            waypoints: waypointsList
+        )
+        
+        onQuickPolylineReady?(finalTrack)
+        
+        // 5. 搜尋沿線補給站
+        var allSupplies: [SupplyPoint] = []
+        for r in allMKRoutes {
+            let legSupplies = await searchRealSupplyPointsAlongRoute(route: r)
+            allSupplies.append(contentsOf: legSupplies)
+        }
+        
+        var seenNames = Set<String>()
+        var uniqueSupplies: [SupplyPoint] = []
+        for s in allSupplies {
+            if !seenNames.contains(s.name) {
+                seenNames.insert(s.name)
+                uniqueSupplies.append(s)
             }
         }
-        
-        // 加入終點地標（對應真實終點海拔）
-        if let lastItem = mapItems.last {
-            waypointsList.append(GPXWaypoint(
-                name: "終點: \(lastItem.name ?? destinationName)",
-                latitude: lastItem.placemark.coordinate.latitude,
-                longitude: lastItem.placemark.coordinate.longitude,
-                elevation: combinedRoutePoints.last?.elevation ?? 15.0,
-                iconName: "trophy.fill"
-            ))
-        }
-        
-        let title = "\(mapItems.first?.name ?? originName) ➔ \(mapItems.last?.name ?? destinationName)"
-        let finalTrack = GPXTrack(title: title, points: combinedRoutePoints, waypoints: waypointsList)
-        
-        // 搜尋沿線真實補給點（支援 500m/1000m 半徑過濾、5km/10km 間隔採樣、離目前位置最近 5 個優先便利商店）
-        let supplyPoints = await searchComprehensiveSupplyPoints(
-            routeCoordinates: allCoordinates,
-            totalDistanceKm: totalDistKm,
-            userLocation: userLocation
-        )
         
         self.latestSteps = navigationSteps
         WorkoutTracker.shared.activeNavigationSteps = navigationSteps
         
-        let result = (finalTrack, supplyPoints, navigationSteps)
-        if !originName.contains("目前位置") {
-            routeCache[cacheKey] = result
-        }
+        let result = (finalTrack, uniqueSupplies, navigationSteps)
+        self.routeCache[cacheKey] = result
         return result
     }
     
-    /// 取得路線沿途真實地理海拔高度 (整合全球與台灣高精度 30m DEM 衛星高程，杜絕平路虛假爬升)
-    public func fetchRealisticElevations(for coords: [CLLocationCoordinate2D]) async -> [Double] {
-        guard !coords.isEmpty else { return [] }
-        
-        let count = coords.count
-        // 取樣最多 60 個等距控制點進行高程批次查詢，其餘採線性內插，保證在 0.3 秒內極速完成
-        let sampleLimit = min(35, count)
-        var sampledIndices: [Int] = []
-        if count <= sampleLimit {
-            sampledIndices = Array(0..<count)
-        } else {
-            for s in 0..<sampleLimit {
-                let idx = Int(Double(s) / Double(sampleLimit - 1) * Double(count - 1))
-                sampledIndices.append(idx)
-            }
-        }
-        
-        let sampledCoords = sampledIndices.map { coords[$0] }
-        let lats = sampledCoords.map { String(format: "%.4f", $0.latitude) }.joined(separator: ",")
-        let lons = sampledCoords.map { String(format: "%.4f", $0.longitude) }.joined(separator: ",")
-        
-        let urlString = "https://api.open-meteo.com/v1/elevation?latitude=\(lats)&longitude=\(lons)"
-        
-        var fetchedElevations: [Double] = []
-        
-        if let url = URL(string: urlString) {
-            do {
-                var request = URLRequest(url: url)
-                request.timeoutInterval = 6.0
-                let (data, response) = try await URLSession.shared.data(for: request)
-                if let httpResp = response as? HTTPURLResponse, httpResp.statusCode == 200 {
-                    struct ElevationResponse: Decodable {
-                        let elevation: [Double]
-                    }
-                    let decoded = try JSONDecoder().decode(ElevationResponse.self, from: data)
-                    if decoded.elevation.count == sampledCoords.count {
-                        fetchedElevations = decoded.elevation
-                    }
-                }
-            } catch {
-                print("Failed to fetch real elevations from DEM: \(error.localizedDescription)")
-            }
-        }
-        
-        // 若 API 查詢成功，對所有折線座標進行平滑高程內插
-        if fetchedElevations.count == sampledIndices.count && fetchedElevations.count > 1 {
-            var fullElevations = [Double](repeating: fetchedElevations.first ?? 15.0, count: count)
-            for seg in 0..<(sampledIndices.count - 1) {
-                let startIdx = sampledIndices[seg]
-                let endIdx = sampledIndices[seg + 1]
-                let startEle = fetchedElevations[seg]
-                let endEle = fetchedElevations[seg + 1]
-                let span = max(1, endIdx - startIdx)
-                
-                for k in startIdx...endIdx {
-                    let frac = Double(k - startIdx) / Double(span)
-                    fullElevations[k] = startEle + (endEle - startEle) * frac
-                }
-            }
-            return fullElevations
-        } else if fetchedElevations.count == 1 {
-            return [Double](repeating: fetchedElevations[0], count: count)
-        }
-        
-        // 離線智慧備援策略：使用精確地形海拔模型，重現地貌真實起伏，絕非 0m 平線
-        let baseAltitude = WorkoutTracker.shared.currentUserLocation?.altitude ?? 15.0
-        return coords.map { Self.estimateGeographicElevation(coord: $0, fallbackBase: baseAltitude) }
-    }
-    
-    /// 在 Apple 地圖 App 中開啟真實導航
-    public func openInAppleMaps(destination: String, origin: String = "目前位置") {
-        let destQuery = destination.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let originQuery = origin.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        let urlString = "maps://?saddr=\(originQuery)&daddr=\(destQuery)&dirflg=d"
-        if let url = URL(string: urlString) {
-            #if os(macOS)
-            NSWorkspace.shared.open(url)
-            #elseif os(iOS)
-            UIApplication.shared.open(url)
-            #endif
-        }
-    }
-    
-    /// 在 Google 地圖中開啟真實導航
-    public func openInGoogleMaps(destination: String, origin: String = "目前位置", intermediateStops: [String] = []) {
-        var urlString = "https://www.google.com/maps/dir/?api=1"
-        let originEncoded = origin == "目前位置" ? "Current+Location" : (origin.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
-        let destEncoded = destination.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        urlString += "&origin=\(originEncoded)&destination=\(destEncoded)"
-        
-        if !intermediateStops.isEmpty {
-            let waypointsParam = intermediateStops.joined(separator: "|").addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-            urlString += "&waypoints=\(waypointsParam)"
-        }
-        
-        if let url = URL(string: urlString) {
-            #if os(macOS)
-            NSWorkspace.shared.open(url)
-            #elseif os(iOS)
-            UIApplication.shared.open(url)
-            #endif
-        }
-    }
-    
-    /// 搜尋路線沿途補給站（支援 500m/1200m 半徑過濾、5km/10km 間隔採樣、離目前位置最近 5 個優先便利商店）
     public func searchComprehensiveSupplyPoints(
         routeCoordinates: [CLLocationCoordinate2D],
         totalDistanceKm: Double,
@@ -461,225 +361,65 @@ public class MapRouteService: ObservableObject {
     ) async -> [SupplyPoint] {
         guard !routeCoordinates.isEmpty else { return [] }
         
-        let routeStartCoord = routeCoordinates.first!
-        let userCLLocation: CLLocation? = userLocation.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
+        let categories: [(query: String, cat: SupplyPoint.SupplyCategory)] = [
+            ("7-Eleven", .convenienceStore),
+            ("全家 FamilyMart", .convenienceStore),
+            ("萊爾富", .convenienceStore),
+            ("加油站", .gasStation),
+            ("鐵馬驛站", .waterStation),
+            ("單車店", .bikeShop),
+            ("自行車維修", .bikeShop),
+            ("咖啡", .restaurant)
+        ]
         
-        // 1. 決定間隔採樣步長：
-        // 總距離 50 公里以內 -> 每隔 5 公里
-        // 總距離 50 公里以上 -> 每隔 10 公里
-        let intervalKm = (totalDistanceKm <= 50.0) ? 5.0 : 10.0
-        
-        // 計算累積距離並選取採樣錨點（保證所有錨點都在實際路線上）
-        var samplingCoordinates: [(coord: CLLocationCoordinate2D, distKm: Double)] = []
-        var runningDistKm = 0.0
-        var nextTargetKm = 0.0
-        
-        // 始終加入路線起始點
-        samplingCoordinates.append((coord: routeStartCoord, distKm: 0.0))
-        nextTargetKm += intervalKm
-        
-        for i in 1..<routeCoordinates.count {
-            let prev = routeCoordinates[i - 1]
-            let curr = routeCoordinates[i]
-            let p1 = CLLocation(latitude: prev.latitude, longitude: prev.longitude)
-            let p2 = CLLocation(latitude: curr.latitude, longitude: curr.longitude)
-            let stepKm = p1.distance(from: p2) / 1000.0
-            runningDistKm += stepKm
-            
-            if runningDistKm >= nextTargetKm {
-                samplingCoordinates.append((coord: curr, distKm: runningDistKm))
-                nextTargetKm += intervalKm
-            }
+        let sampleStep = max(1, routeCoordinates.count / 8)
+        var sampledCoords: [CLLocationCoordinate2D] = []
+        for i in stride(from: 0, to: routeCoordinates.count, by: sampleStep) {
+            sampledCoords.append(routeCoordinates[i])
         }
-        // 確保終點也在採樣錨點中
-        if let lastCoord = routeCoordinates.last, runningDistKm > 0 {
-            samplingCoordinates.append((coord: lastCoord, distKm: runningDistKm))
+        if let last = routeCoordinates.last, sampledCoords.last?.latitude != last.latitude {
+            sampledCoords.append(last)
         }
         
-        // 2. 高效並行搜尋：均勻選取最多 6 個沿線採樣點進行並行 MKLocalSearch，確保涵蓋整條路線
-        var rawSupplies: [SupplyPoint] = []
-        let selectedAnchors: [(coord: CLLocationCoordinate2D, distKm: Double)] = {
-            if samplingCoordinates.count <= 6 {
-                return samplingCoordinates
-            }
-            let step = Double(samplingCoordinates.count - 1) / 5.0
-            return (0..<6).map { i in
-                let idx = min(samplingCoordinates.count - 1, Int(round(Double(i) * step)))
-                return samplingCoordinates[idx]
-            }
-        }()
+        var uniqueSupplies: [SupplyPoint] = []
+        var seenIDs = Set<String>()
+        let userCLLocation = userLocation.map { CLLocation(latitude: $0.latitude, longitude: $0.longitude) }
         
-        let capturedCoords = routeCoordinates
-        
-        await withTaskGroup(of: [SupplyPoint].self) { group in
-            for anchor in selectedAnchors {
-                group.addTask {
-                    var localPoints: [SupplyPoint] = []
-                    let req = MKLocalSearch.Request()
-                    req.naturalLanguageQuery = "便利商店"
-                    req.region = MKCoordinateRegion(
-                        center: anchor.coord,
-                        latitudinalMeters: 3000,
-                        longitudinalMeters: 3000
-                    )
-                    let search = MKLocalSearch(request: req)
-                    if let response = try? await search.start() {
-                        for item in response.mapItems.prefix(10) {
-                            let itemCoord = item.placemark.coordinate
-                            let distToRoute = Self.distanceToRouteMeters(coord: itemCoord, routeCoordinates: capturedCoords)
-                            if distToRoute <= 1200.0 {
-                                let itemLoc = CLLocation(latitude: itemCoord.latitude, longitude: itemCoord.longitude)
-                                let distToUser = userCLLocation?.distance(from: itemLoc)
-                                
-                                let nameLower = (item.name ?? "").lowercased()
-                                let cat: SupplyPoint.SupplyCategory
-                                if nameLower.contains("加油站") || nameLower.contains("中油") || nameLower.contains("台塑") {
-                                    cat = .gasStation
-                                } else if nameLower.contains("車") || nameLower.contains("bike") || nameLower.contains("giant") || nameLower.contains("merida") {
-                                    cat = .bikeShop
-                                } else {
-                                    cat = .convenienceStore
-                                }
-                                
-                                let noteText = distToRoute <= 500.0
-                                    ? "路線核心 \(Int(distToRoute))m • \(item.placemark.title ?? "")"
-                                    : "路線周邊 \(Int(distToRoute))m • \(item.placemark.title ?? "")"
-                                
-                                let sp = SupplyPoint(
-                                    name: item.name ?? "便利商店",
-                                    category: cat,
-                                    coordinate: itemCoord,
-                                    distanceFromStartKm: anchor.distKm,
-                                    note: noteText,
-                                    distanceToUserMeters: distToUser,
-                                    distanceToRouteMeters: distToRoute,
-                                    isNearestTop5: false
-                                )
-                                localPoints.append(sp)
-                            }
+        for center in sampledCoords {
+            for item in categories {
+                let req = MKLocalSearch.Request()
+                req.naturalLanguageQuery = item.query
+                req.region = MKCoordinateRegion(center: center, span: MKCoordinateSpan(latitudeDelta: 0.04, longitudeDelta: 0.04))
+                
+                let search = MKLocalSearch(request: req)
+                if let resp = try? await search.start() {
+                    for mapItem in resp.mapItems {
+                        let itemCoord = mapItem.placemark.coordinate
+                        let name = mapItem.name ?? item.query
+                        let key = "\(name)_\(String(format: "%.4f", itemCoord.latitude))_\(String(format: "%.4f", itemCoord.longitude))"
+                        if seenIDs.contains(key) { continue }
+                        seenIDs.insert(key)
+                        
+                        let distToRoute = Self.distanceToRouteMeters(coord: itemCoord, routeCoordinates: routeCoordinates)
+                        if distToRoute <= 800 {
+                            let dUser = userCLLocation?.distance(from: CLLocation(latitude: itemCoord.latitude, longitude: itemCoord.longitude))
+                            uniqueSupplies.append(SupplyPoint(
+                                name: name,
+                                category: item.cat,
+                                coordinate: itemCoord,
+                                distanceFromStartKm: totalDistanceKm / 2.0,
+                                note: "距離路線約 \(Int(distToRoute))m",
+                                distanceToUserMeters: dUser,
+                                distanceToRouteMeters: distToRoute,
+                                isNearestTop5: false
+                            ))
                         }
                     }
-                    return localPoints
-                }
-            }
-            
-            for await pts in group {
-                rawSupplies.append(contentsOf: pts)
-            }
-        }
-        
-        // 4. 去重（相同名稱或距離小於 40 公尺視為同一補給站）
-        var uniqueSupplies: [SupplyPoint] = []
-        for sp in rawSupplies {
-            let isDuplicate = uniqueSupplies.contains { existing in
-                let p1 = CLLocation(latitude: existing.coordinate.latitude, longitude: existing.coordinate.longitude)
-                let p2 = CLLocation(latitude: sp.coordinate.latitude, longitude: sp.coordinate.longitude)
-                return existing.name == sp.name || p1.distance(from: p2) < 40.0
-            }
-            if !isDuplicate {
-                uniqueSupplies.append(sp)
-            }
-        }
-        
-        // 5. 若沿途搜尋結果較少，針對路線中段進行備援搜尋
-        if uniqueSupplies.isEmpty {
-            let centerCoord = routeCoordinates[routeCoordinates.count / 2]
-            let req = MKLocalSearch.Request()
-            req.naturalLanguageQuery = "便利商店"
-            req.region = MKCoordinateRegion(center: centerCoord, latitudinalMeters: 6000, longitudinalMeters: 6000)
-            let fallbackSearch = MKLocalSearch(request: req)
-            if let fallbackResp = try? await fallbackSearch.start() {
-                for item in fallbackResp.mapItems {
-                    let itemCoord = item.placemark.coordinate
-                    let distToRoute = Self.distanceToRouteMeters(coord: itemCoord, routeCoordinates: capturedCoords)
-                    if distToRoute <= 2000.0 {
-                        let itemLoc = CLLocation(latitude: itemCoord.latitude, longitude: itemCoord.longitude)
-                        let dUser = userCLLocation?.distance(from: itemLoc)
-                        uniqueSupplies.append(SupplyPoint(
-                            name: item.name ?? "便利商店",
-                            category: .convenienceStore,
-                            coordinate: itemCoord,
-                            distanceFromStartKm: totalDistanceKm / 2.0,
-                            note: "路線沿線 \(Int(distToRoute))m",
-                            distanceToUserMeters: dUser,
-                            distanceToRouteMeters: distToRoute,
-                            isNearestTop5: false
-                        ))
-                    }
                 }
             }
         }
         
-        // 6. 計算「最便捷的 5 個補給點（優先便利商店）」
-        let convStores = uniqueSupplies.filter { $0.category == .convenienceStore }
-        let others = uniqueSupplies.filter { $0.category != .convenienceStore }
-        
-        let userIsNearRoute: Bool = {
-            guard let userLoc = userCLLocation else { return false }
-            let startLoc = CLLocation(latitude: routeStartCoord.latitude, longitude: routeStartCoord.longitude)
-            return userLoc.distance(from: startLoc) < 25000.0 // 距離起點 25km 內視為鄰近
-        }()
-        
-        let sortedConv: [SupplyPoint] = {
-            if userIsNearRoute {
-                return convStores.sorted { ($0.distanceToUserMeters ?? .infinity) < ($1.distanceToUserMeters ?? .infinity) }
-            } else {
-                return convStores.sorted {
-                    let d0 = $0.distanceToRouteMeters ?? .infinity
-                    let d1 = $1.distanceToRouteMeters ?? .infinity
-                    if abs(d0 - d1) > 300 {
-                        return d0 < d1
-                    }
-                    return $0.distanceFromStartKm < $1.distanceFromStartKm
-                }
-            }
-        }()
-        
-        let sortedOthers: [SupplyPoint] = {
-            if userIsNearRoute {
-                return others.sorted { ($0.distanceToUserMeters ?? .infinity) < ($1.distanceToUserMeters ?? .infinity) }
-            } else {
-                return others.sorted { ($0.distanceToRouteMeters ?? .infinity) < ($1.distanceToRouteMeters ?? .infinity) }
-            }
-        }()
-        
-        var top5List: [SupplyPoint] = []
-        for c in sortedConv {
-            if top5List.count < 5 {
-                top5List.append(c)
-            }
-        }
-        for o in sortedOthers {
-            if top5List.count < 5 {
-                top5List.append(o)
-            }
-        }
-        
-        let top5IDs = Set(top5List.map { $0.id })
-        
-        var finalResult = uniqueSupplies.map { item -> SupplyPoint in
-            var copy = item
-            if top5IDs.contains(item.id) {
-                copy.isNearestTop5 = true
-            }
-            return copy
-        }
-        
-        // 排序：標註為 top5 的放最前面，其餘依沿線里程進度排序
-        finalResult.sort { a, b in
-            if a.isNearestTop5 && !b.isNearestTop5 { return true }
-            if !a.isNearestTop5 && b.isNearestTop5 { return false }
-            if a.isNearestTop5 && b.isNearestTop5 {
-                if userIsNearRoute {
-                    return (a.distanceToUserMeters ?? 0) < (b.distanceToUserMeters ?? 0)
-                } else {
-                    return a.distanceFromStartKm < b.distanceFromStartKm
-                }
-            }
-            return a.distanceFromStartKm < b.distanceFromStartKm
-        }
-        
-        return finalResult
+        return uniqueSupplies
     }
     
     private func searchRealSupplyPointsAlongRoute(route: MKRoute) async -> [SupplyPoint] {
@@ -708,20 +448,21 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
     
     // Core Workout Metrics
     @Published public var state: WorkoutState = .idle
-    @Published public var elapsedSeconds: TimeInterval = 0       // 總歷時 (包含所有暫停)
-    @Published public var movingSeconds: TimeInterval = 0        // 實際運動時間 (自動暫停與手動暫停不計入)
-    @Published public var isAutoPaused: Bool = false             // 停等紅綠燈或靜止時自動暫停
-    @Published public var isManuallyPaused: Bool = false         // 使用者手動按下暫停
+    @Published public var elapsedSeconds: TimeInterval = 0       // 總歷時
+    @Published public var movingSeconds: TimeInterval = 0        // 實際移動時間
+    @Published public var isAutoPaused: Bool = false             // 靜止自動暫停
+    @Published public var isManuallyPaused: Bool = false         // 使用者手動暫停
     
     @Published public var currentDistanceKm: Double = 0
     @Published public var currentSpeedKmh: Double = 0
     @Published public var currentHeartRateBpm: Int? = nil
     @Published public var currentCadenceRpm: Int? = nil
+    @Published public var currentPowerWatts: Int? = nil
     @Published public var currentElevationMeters: Double = 0.0
     @Published public var currentGradientPercent: Double = 0.0
     @Published public var totalAscentMeters: Double = 0.0
     
-    // 即時行進航向 (0°~360°)，用於判斷順風、逆風、側風
+    // 即時朝向 (0°~360°)，用於 Google Maps 風格方向錐與順/逆風判斷
     @Published public var currentUserHeading: Double? = nil
     
     // Active Navigation Guidance State
@@ -729,20 +470,48 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
     @Published public var currentStepIndex: Int = 0
     @Published public var distanceToNextStepMeters: Double = 0
     
-    // Real-Time Current User Location (Always kept active)
+    // 偏離路線與自動重新導航
+    @Published public var isOffRoute: Bool = false
+    @Published public var offRouteDistanceMeters: Double = 0.0
+    public var onAutoRerouteRequested: (() -> Void)? = nil
+    private var offRouteTicks: Int = 0
+    
+    // Real-Time Current User Location
     @Published public var currentUserLocation: CLLocation? = nil
     
-    // Recorded GPS Points
+    // Recorded GPS Points (獨立儲存使用者的真實騎乘軌跡)
     @Published public var recordedPoints: [RoutePoint] = []
     @Published public var lastRecordedLocation: CLLocation? = nil
     
-    // 運動平均時速 (使用實際運動時間計算)
     public var avgMovingSpeedKmh: Double {
         guard movingSeconds >= 3 && currentDistanceKm >= 0.02 else { return 0.0 }
         return currentDistanceKm / (movingSeconds / 3600.0)
     }
     
-    // Wall-clock Accurate Timekeeping (Strava / Garmin Standard)
+    // 真實感測器平均值計算 (排除 0 與異常值)
+    public var calculatedAvgCadence: Int? {
+        let valid = recordedPoints.compactMap(\.cadence).filter { $0 > 0 }
+        guard !valid.isEmpty else { return nil }
+        return Int(valid.reduce(0, +) / valid.count)
+    }
+    
+    public var calculatedAvgHeartRate: Int? {
+        let valid = recordedPoints.compactMap(\.heartRate).filter { $0 > 30 && $0 < 240 }
+        guard !valid.isEmpty else { return nil }
+        return Int(valid.reduce(0, +) / valid.count)
+    }
+    
+    public var calculatedAvgPower: Int? {
+        let valid = recordedPoints.compactMap(\.powerWatts).filter { $0 > 0 }
+        guard !valid.isEmpty else { return nil }
+        return Int(valid.reduce(0, +) / valid.count)
+    }
+    
+    public var calculatedMaxPower: Int? {
+        let valid = recordedPoints.compactMap(\.powerWatts)
+        return valid.max()
+    }
+    
     private var workoutStartDate: Date?
     private var pauseStartDate: Date?
     private var totalPausedDuration: TimeInterval = 0
@@ -821,6 +590,7 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                 timestamp: Date(),
                 heartRate: self.currentHeartRateBpm,
                 cadence: self.currentCadenceRpm,
+                powerWatts: self.currentPowerWatts,
                 speedKmh: 0.0
             )
             self.recordedPoints.append(initialPoint)
@@ -829,10 +599,10 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         locationManager?.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager?.distanceFilter = kCLDistanceFilterNone
         locationManager?.startUpdatingLocation()
+        locationManager?.startUpdatingHeading()
         startTimer()
     }
     
-    /// 手動暫停：使用者主動按下暫停，唯有手動繼續才會繼續計時，即時速度立即歸零
     public func pauseWorkout() {
         guard state == .recording else { return }
         state = .paused
@@ -846,7 +616,6 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         locationManager?.desiredAccuracy = kCLLocationAccuracyHundredMeters
     }
     
-    /// 手動繼續：使用者主動按下繼續
     public func resumeWorkout() {
         guard state == .paused else { return }
         state = .recording
@@ -862,10 +631,10 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         locationManager?.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager?.distanceFilter = kCLDistanceFilterNone
         locationManager?.startUpdatingLocation()
+        locationManager?.startUpdatingHeading()
         startTimer()
     }
     
-    /// 結束運動並產出最終 GPX 軌跡，同時將即時速度歸零
     public func stopAndFinishWorkout() -> GPXTrack {
         state = .finished
         isManuallyPaused = false
@@ -885,6 +654,7 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                 timestamp: Date(),
                 heartRate: self.currentHeartRateBpm,
                 cadence: self.currentCadenceRpm,
+                powerWatts: self.currentPowerWatts,
                 speedKmh: 0.0
             ))
         }
@@ -899,7 +669,6 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         )
     }
     
-    /// 運動結束或重設：徹底將即時速度、運動時間、總歷時、里程、爬升、坡度等所有儀表數據全數歸零
     public func resetAllMetrics() {
         state = .idle
         elapsedSeconds = 0
@@ -910,6 +679,8 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         totalAscentMeters = 0.0
         isAutoPaused = false
         isManuallyPaused = false
+        isOffRoute = false
+        offRouteDistanceMeters = 0.0
         stationaryTicks = 0
         workoutStartDate = nil
         pauseStartDate = nil
@@ -932,7 +703,6 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self, self.state == .recording else { return }
             
-            // 總歷時累計 (精準牆鐘時間)
             if let start = self.workoutStartDate {
                 let actualWallClock = Date().timeIntervalSince(start) - self.totalPausedDuration
                 self.elapsedSeconds = max(0, actualWallClock)
@@ -940,15 +710,14 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                 self.elapsedSeconds += 1.0
             }
             
-            // 靜止逾時判定：若超過 2.0 秒未收到顯著位移，判定為停等紅綠燈或停下休息，立即速度歸零並暫停計時
+            // 靜止判定放寬至 4.0 秒，避免急轉彎、原路折返、停等紅綠燈過渡期頻繁誤跳暫停
             let secondsSinceMovement = Date().timeIntervalSince(self.lastMovementDate)
-            if secondsSinceMovement >= 2.0 {
+            if secondsSinceMovement >= 4.0 {
                 self.isAutoPaused = true
                 self.currentSpeedKmh = 0.0
                 self.currentGradientPercent = 0.0
             }
             
-            // 運動時間累計 (僅在非手動暫停且非停等自動暫停時累計)
             if !self.isManuallyPaused && !self.isAutoPaused {
                 self.movingSeconds += 1.0
             }
@@ -960,8 +729,11 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
             if let bleCad = BluetoothSensorManager.shared.liveCadenceRpm {
                 self.currentCadenceRpm = bleCad
             }
+            if let blePower = BluetoothSensorManager.shared.livePowerWatts {
+                self.currentPowerWatts = blePower
+            }
             
-            // 導航距離遞減推進 (在移動中才推進)
+            // 導航距離遞減推進
             if !self.isAutoPaused && !self.isManuallyPaused && !self.activeNavigationSteps.isEmpty && self.currentStepIndex < self.activeNavigationSteps.count {
                 let metersPerSec = (self.currentSpeedKmh / 3.6)
                 if metersPerSec > 0 {
@@ -977,6 +749,40 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                     }
                 }
             }
+        }
+    }
+    
+    // 偏離路線檢測
+    public func checkOffRoute(plannedTrack: GPXTrack?) {
+        guard state == .recording, let userLoc = currentUserLocation, let planned = plannedTrack, planned.points.count > 1 else {
+            isOffRoute = false
+            return
+        }
+        
+        let pUser = CLLocation(latitude: userLoc.coordinate.latitude, longitude: userLoc.coordinate.longitude)
+        var minDistance = Double.greatestFiniteMagnitude
+        let step = max(1, planned.points.count / 100)
+        for i in stride(from: 0, to: planned.points.count, by: step) {
+            let pt = planned.points[i]
+            let p = CLLocation(latitude: pt.latitude, longitude: pt.longitude)
+            let d = pUser.distance(from: p)
+            if d < minDistance {
+                minDistance = d
+            }
+        }
+        
+        self.offRouteDistanceMeters = minDistance
+        
+        // 偏離大於 65 公尺持續 4 次更新視為偏離路線
+        if minDistance > 65.0 {
+            offRouteTicks += 1
+            if offRouteTicks >= 4 {
+                self.isOffRoute = true
+                self.onAutoRerouteRequested?()
+            }
+        } else {
+            offRouteTicks = 0
+            self.isOffRoute = false
         }
     }
     
@@ -1002,14 +808,10 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
             
             guard self.state == .recording else { return }
             
-            // 專業碼錶級 GPS 精度安全閘門：
-            // 1. horizontalAccuracy < 0 代表定位無效
-            // 2. horizontalAccuracy > 35.0 代表精度過低（例如進入室內或高樓盲區），必須過濾避免座標暴衝跳躍
             guard newLoc.horizontalAccuracy >= 0 && newLoc.horizontalAccuracy <= 35.0 else { return }
             
             self.lastLocationReceivedDate = Date()
             
-            // CoreLocation 瞬時速度：< 0 為無效值
             let rawSpeedKmh = (newLoc.speed >= 0) ? (newLoc.speed * 3.6) : 0.0
             
             var distMeters: Double = 0.0
@@ -1020,15 +822,13 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
             }
             let calculatedSpeedKmh = (distMeters / timeDelta) * 3.6
             
-            // 異常位移過濾（自行車極速防護：排除單車時速不可能達到的 > 120 km/h 瞬移跳點）
+            // 異常位移過濾 (時速 > 120 km/h 瞬移防護)
             if distMeters > 30.0 && calculatedSpeedKmh > 120.0 && rawSpeedKmh > 120.0 {
                 return
             }
             
-            // 停下來的嚴格過濾 (排除原地 GPS 漂移與抖動)：
-            // 1. rawSpeedKmh < 1.8 km/h (約 0.5 m/s，低於正常騎乘與步行速度)
-            // 2. 或 位移小於 1.5 公尺且 rawSpeedKmh < 2.5 km/h
-            let isStationary = (rawSpeedKmh < 1.8) || (distMeters < 1.5 && rawSpeedKmh < 2.5)
+            // 停下靜止過濾：排除原地漂移
+            let isStationary = (rawSpeedKmh < 1.2) || (distMeters < 1.0 && rawSpeedKmh < 1.8)
             
             if isStationary {
                 self.stationaryTicks += 1
@@ -1036,8 +836,7 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                 self.currentSpeedKmh = 0.0
                 self.currentGradientPercent = 0.0
             } else {
-                // 確實處於騎乘運動中 (速度 >= 1.8 km/h 且有前進)
-                let effectiveSpeed = (rawSpeedKmh >= 1.8) ? rawSpeedKmh : calculatedSpeedKmh
+                let effectiveSpeed = (rawSpeedKmh >= 1.2) ? rawSpeedKmh : calculatedSpeedKmh
                 self.stationaryTicks = 0
                 self.lastMovementDate = Date()
                 if !self.isManuallyPaused {
@@ -1045,21 +844,20 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                 }
                 self.currentSpeedKmh = effectiveSpeed
                 
-                // 真實位移門檻：水平移動 >= 2.0 公尺才累加距離與記錄點，防止原地漂移虛增里程
-                if distMeters >= 2.0 {
+                // 真實位移門檻放寬至 1.2 公尺，確保急轉彎與原路折返流暢記錄
+                if distMeters >= 1.2 {
                     let stepKm = distMeters / 1000.0
                     self.currentDistanceKm += stepKm
                     
-                    // 海拔與坡度過濾
                     if let prev = self.lastRecordedLocation {
                         let eleDiff = newLoc.altitude - prev.altitude
                         if newLoc.verticalAccuracy >= 0 && newLoc.verticalAccuracy < 25.0 {
-                            if eleDiff > 0.8 {
+                            if eleDiff > 0.6 {
                                 self.totalAscentMeters += eleDiff
                             }
                         }
                         
-                        if distMeters >= 6.0 {
+                        if distMeters >= 5.0 {
                             let grad = (eleDiff / distMeters) * 100.0
                             self.currentGradientPercent = max(-25.0, min(25.0, grad))
                         }
@@ -1074,6 +872,7 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                         timestamp: newLoc.timestamp,
                         heartRate: self.currentHeartRateBpm,
                         cadence: self.currentCadenceRpm,
+                        powerWatts: self.currentPowerWatts,
                         speedKmh: effectiveSpeed
                     )
                     self.recordedPoints.append(newPoint)
@@ -1108,32 +907,77 @@ public class AIEstimationEngine {
     
     public func predictETA(
         track: GPXTrack,
+        currentUserLocation: CLLocationCoordinate2D? = nil,
         currentProgressRatio: Double = 0.0,
+        trackerDistanceKm: Double = 0.0,
+        rollingAvgSpeedKmh: Double = 22.0,
         userBaseSpeedKmh: Double = 22.0,
-        windImpactKmh: Double = -2.5,
+        windImpactKmh: Double = -1.5,
         temperatureC: Double = 28.0
     ) -> PredictionResult {
-        let remainingDistance = track.totalDistanceKm * (1.0 - currentProgressRatio)
-        let remainingClimb = track.totalAscentMeters * (1.0 - currentProgressRatio)
+        var remainingDistance = track.totalDistanceKm
+        var remainingClimb = track.totalAscentMeters
         
-        let avgSlopePercent = remainingDistance > 0 ? (remainingClimb / (remainingDistance * 1000.0)) * 100.0 : 0.0
-        var adjustedSpeed = userBaseSpeedKmh - (avgSlopePercent * 1.35) + windImpactKmh
-        
-        if temperatureC > 32.0 {
-            adjustedSpeed *= 0.92
+        if let user = currentUserLocation, track.points.count > 1 {
+            let uLoc = CLLocation(latitude: user.latitude, longitude: user.longitude)
+            var closestIdx = 0
+            var minDist = Double.greatestFiniteMagnitude
+            for (idx, pt) in track.points.enumerated() {
+                let d = uLoc.distance(from: CLLocation(latitude: pt.latitude, longitude: pt.longitude))
+                if d < minDist {
+                    minDist = d
+                    closestIdx = idx
+                }
+            }
+            
+            if closestIdx < track.points.count - 1 {
+                let remainingPoints = Array(track.points[closestIdx...])
+                let remainingTrack = GPXTrack(title: "Remaining", points: remainingPoints)
+                remainingDistance = remainingTrack.totalDistanceKm
+                remainingClimb = remainingTrack.totalAscentMeters
+            } else {
+                remainingDistance = 0.0
+                remainingClimb = 0.0
+            }
+        } else if track.totalDistanceKm > 0 {
+            let ratio = currentProgressRatio > 0 ? currentProgressRatio : min(1.0, max(0.0, trackerDistanceKm / track.totalDistanceKm))
+            remainingDistance = track.totalDistanceKm * (1.0 - ratio)
+            remainingClimb = track.totalAscentMeters * (1.0 - ratio)
         }
         
-        let fatigueMultiplier = 1.0 + (remainingDistance > 30 ? 0.12 : 0.05)
-        adjustedSpeed = max(8.5, adjustedSpeed)
+        if remainingDistance <= 0.05 {
+            return PredictionResult(
+                estimatedDurationSeconds: 0,
+                estimatedArrivalDate: Date(),
+                averagePaceMinutesPerKm: 0,
+                expectedCalorieBurn: 0,
+                fatigueFactorPercent: 0,
+                confidenceScore: 1.0,
+                explanation: "即將抵達目的地！"
+            )
+        }
+        
+        // 速度建模：以穩定移動均速為主，避免紅綠燈靜止歸零或衝刺失真
+        let effectiveBaseSpeed = rollingAvgSpeedKmh >= 8.0 ? (rollingAvgSpeedKmh * 0.7 + userBaseSpeedKmh * 0.3) : userBaseSpeedKmh
+        
+        let avgSlopePercent = remainingDistance > 0 ? (remainingClimb / (remainingDistance * 1000.0)) * 100.0 : 0.0
+        var adjustedSpeed = effectiveBaseSpeed - (avgSlopePercent * 1.1) + windImpactKmh
+        
+        if temperatureC > 32.0 {
+            adjustedSpeed *= 0.93
+        }
+        
+        let fatigueMultiplier = 1.0 + (remainingDistance > 35.0 ? 0.08 : 0.03)
+        adjustedSpeed = max(8.0, min(45.0, adjustedSpeed))
         
         let effectiveSpeed = adjustedSpeed / fatigueMultiplier
         let hoursNeeded = remainingDistance / effectiveSpeed
         let durationSec = hoursNeeded * 3600.0
         let arrival = Date().addingTimeInterval(durationSec)
         
-        let calories = Int(remainingDistance * 32.0 + remainingClimb * 0.9)
+        let calories = Int(remainingDistance * 30.0 + remainingClimb * 0.85)
         
-        let explanation = "AI 考量剩餘 \(String(format: "%.1f", remainingDistance)) km、爬升 \(Int(remainingClimb)) m、平均坡度 \(String(format: "%.1f", avgSlopePercent))%，預估完賽均速約 \(String(format: "%.1f", effectiveSpeed)) km/h。"
+        let explanation = "AI 根據當前均速 \(String(format: "%.1f", effectiveBaseSpeed)) km/h、剩餘 \(String(format: "%.1f", remainingDistance)) km、爬升 \(Int(remainingClimb)) m (坡度 \(String(format: "%.1f", avgSlopePercent))%)，精算預計 \(String(format: "%.1f", effectiveSpeed)) km/h 推進。"
         
         return PredictionResult(
             estimatedDurationSeconds: durationSec,
@@ -1141,7 +985,7 @@ public class AIEstimationEngine {
             averagePaceMinutesPerKm: 60.0 / effectiveSpeed,
             expectedCalorieBurn: calories,
             fatigueFactorPercent: Int((fatigueMultiplier - 1.0) * 100),
-            confidenceScore: 0.94,
+            confidenceScore: 0.95,
             explanation: explanation
         )
     }
@@ -1156,16 +1000,13 @@ public class SupplyPointService {
     }
 }
 
-// MARK: - Route Weather & Waypoint Transit Rain Predictor (推斷幾點幾分路過特定路段與降雨機率)
+// MARK: - Route Weather & Dynamic Timeline Service
 public class RouteWeatherService {
     public static let shared = RouteWeatherService()
     
-    private var lastForecastTrackID: UUID?
-    private var lastForecastTime: Date?
-    private var cachedForecasts: [RouteWeatherForecast] = []
-    
     public func getRouteForecast(
         track: GPXTrack,
+        currentUserCoord: CLLocationCoordinate2D? = nil,
         currentDistanceKm: Double = 0.0,
         currentMovingSpeedKmh: Double = 22.0
     ) -> [RouteWeatherForecast] {
@@ -1173,136 +1014,160 @@ public class RouteWeatherService {
         
         var forecasts: [RouteWeatherForecast] = []
         let now = Date()
-        let effectiveSpeed = max(10.0, currentMovingSpeedKmh > 3.0 ? currentMovingSpeedKmh : 22.0)
+        let speed = max(10.0, currentMovingSpeedKmh > 3.0 ? currentMovingSpeedKmh : 22.0)
+        let totalKm = track.totalDistanceKm
         
-        // 1. 整理路線上關鍵路段/地標站點 (包含使用者設定之中繼站與代表性地形點)
-        var sampledPoints: [(name: String, point: RoutePoint, distKm: Double)] = []
+        // 1. 目前位置 (即時天氣)
+        let currentLocCoord = currentUserCoord ?? track.points.first?.coordinate ?? CLLocationCoordinate2D(latitude: 25.033, longitude: 121.565)
+        let currentEle = track.points.first?.elevation ?? 15.0
+        forecasts.append(buildForecast(
+            name: "目前位置 (即時)",
+            coord: currentLocCoord,
+            time: now,
+            distKm: 0.0,
+            ele: currentEle,
+            isPassed: false,
+            advice: "路況良好，注意補水與即時踏頻維持。"
+        ))
         
-        if !track.waypoints.isEmpty {
-            for wpt in track.waypoints {
-                let pLoc = CLLocation(latitude: wpt.latitude, longitude: wpt.longitude)
-                var closestDistKm = 0.0
-                var minD = Double.infinity
-                var cumDist = 0.0
-                for i in 0..<track.points.count {
-                    if i > 0 {
-                        let ptA = track.points[i-1]
-                        let ptB = track.points[i]
-                        cumDist += CLLocation(latitude: ptA.latitude, longitude: ptA.longitude)
-                            .distance(from: CLLocation(latitude: ptB.latitude, longitude: ptB.longitude)) / 1000.0
-                    }
-                    let pt = track.points[i]
-                    let d = pLoc.distance(from: CLLocation(latitude: pt.latitude, longitude: pt.longitude))
-                    if d < minD {
-                        minD = d
-                        closestDistKm = cumDist
-                    }
-                }
-                sampledPoints.append((wpt.name, RoutePoint(latitude: wpt.latitude, longitude: wpt.longitude, elevation: wpt.elevation), closestDistKm))
-            }
-        }
-        
-        // 若自訂站點不足 3 個，自動依路線拓撲與海拔高低點取樣 (起點、25%爬坡起點、最高峰/半程、75%衝刺點、終點)
-        if sampledPoints.count < 3 && track.points.count > 1 {
-            let total = max(1.0, track.totalDistanceKm)
-            let maxElePoint = track.points.max(by: { $0.elevation < $1.elevation }) ?? track.points[track.points.count / 2]
-            
-            sampledPoints = [
-                ("起點出發處", track.points.first!, 0.0),
-                ("前段爬坡推進站", track.points[track.points.count / 4], total * 0.25),
-                ("路線最高峰 (標高 \(Int(maxElePoint.elevation))m)", maxElePoint, total * 0.5),
-                ("後段平路衝刺站", track.points[(track.points.count * 3) / 4], total * 0.75),
-                ("目的地終點", track.points.last!, total)
-            ]
-        }
-        
-        sampledPoints.sort(by: { $0.distKm < $1.distKm })
-        
-        // 2. 逐站推算：抵達時間 (幾點幾分)、海拔氣溫衰減、以及真實地形降雨機率
-        for (name, pt, distKm) in sampledPoints {
-            let isPassed = (currentDistanceKm >= (distKm + 0.05))
-            let remainingKmToStation = max(0.0, distKm - currentDistanceKm)
-            
-            // 坡度爬坡速度衰減：若該點海拔高於當前，速度調慢；下坡調快
-            let eleDiff = pt.elevation - (track.points.first?.elevation ?? 0.0)
-            let gradeFactor = eleDiff > 100 ? 0.75 : (eleDiff < -100 ? 1.35 : 1.0)
-            let stationSpeed = max(8.0, effectiveSpeed * gradeFactor)
-            
-            let secondsToStation = (remainingKmToStation / stationSpeed) * 3600.0
-            let transitTime = isPassed ? now.addingTimeInterval(-300) : now.addingTimeInterval(secondsToStation)
-            
-            // 3. 氣象模型：計算特定時間通過該海拔與地形之降雨機率
-            let cal = Calendar.current
-            let hour = cal.component(.hour, from: transitTime)
-            
-            // 高海拔 (400m 以上) 午後 (12:30~17:30) 強烈熱對流，降雨機率高達 65%~85%
-            var rainProb: Int = 15
-            var cond = "晴朗乾爽"
-            var sym = "sun.max.fill"
-            var advice = "路況良好，適合維持穩定踏頻推進。"
-            
-            if pt.elevation > 450 {
-                if hour >= 13 && hour <= 17 {
-                    rainProb = 75
-                    cond = "午後對流陣雨"
-                    sym = "cloud.heavyrain.fill"
-                    advice = "高海拔午後易起大霧與雷陣雨，請備風雨衣、開啟車燈！"
-                } else if hour >= 11 && hour < 13 {
-                    rainProb = 40
-                    cond = "山區雲層增厚"
-                    sym = "cloud.sun.fill"
-                    advice = "山區雲層逐漸聚集，建議攜帶輕便風雨衣。"
-                } else if hour >= 18 {
-                    rainProb = 35
-                    cond = "山區降溫薄霧"
-                    sym = "cloud.fog.fill"
-                    advice = "天色漸暗且山頂氣溫驟降，注意防風與回程視線。"
-                } else {
-                    rainProb = 10
-                    cond = "晨間清涼好騎"
-                    sym = "sun.max.fill"
-                    advice = "晨間山區空氣清新，無降雨威脅。"
-                }
-            } else {
-                // 平原 / 市區 / 淺丘
-                if hour >= 14 && hour <= 17 {
-                    rainProb = 35
-                    cond = "多雲偶有陣雨"
-                    sym = "cloud.sun.rain.fill"
-                    advice = "平地多雲，偶有零星熱對流雨滴。"
-                } else {
-                    rainProb = 15
-                    cond = "晴時多雲"
-                    sym = "sun.max.fill"
-                    advice = "路面乾爽，騎乘環境優良。"
-                }
-            }
-            
-            // 4. 氣溫隨海拔每上升 100m 下降約 0.65 度
-            let baseTemp = 28.5
-            let calculatedTemp = max(10.0, baseTemp - (pt.elevation / 100.0) * 0.65)
-            let windSpd = 12.0 + (pt.elevation > 500 ? 12.0 : 4.0)
-            
-            forecasts.append(RouteWeatherForecast(
-                waypointName: name,
-                coordinate: pt.coordinate,
-                projectedTime: transitTime,
-                distanceKm: distKm,
-                elevationMeters: pt.elevation,
-                temperatureC: calculatedTemp,
-                rainProbabilityPercent: rainProb,
-                weatherSymbol: sym,
-                weatherCondition: cond,
-                windSpeedKmh: windSpd,
-                windDirectionDegrees: 45.0,
-                advice: advice,
-                isPassed: isPassed
+        // 2. 未來 30 分鐘路段天氣
+        let distIn30m = speed * 0.5
+        if totalKm > 0.5 {
+            let targetDist = min(totalKm, distIn30m)
+            let pt = pointAtDistance(targetDist, in: track)
+            forecasts.append(buildForecast(
+                name: "+30 分鐘路段",
+                coord: pt.coordinate,
+                time: now.addingTimeInterval(1800),
+                distKm: targetDist,
+                ele: pt.elevation,
+                isPassed: false,
+                advice: "預計進入路段，維持穩定有氧區間推進。"
             ))
         }
         
-        self.lastForecastTrackID = track.id
-        self.lastForecastTime = now
-        self.cachedForecasts = forecasts
+        // 3. 未來 1 小時路段天氣
+        let distIn1h = speed * 1.0
+        if totalKm > distIn30m + 1.0 {
+            let targetDist = min(totalKm, distIn1h)
+            let pt = pointAtDistance(targetDist, in: track)
+            forecasts.append(buildForecast(
+                name: "+1 小時路段",
+                coord: pt.coordinate,
+                time: now.addingTimeInterval(3600),
+                distKm: targetDist,
+                ele: pt.elevation,
+                isPassed: false,
+                advice: "長途騎乘注意補給電解質與碳水。"
+            ))
+        }
+        
+        // 4. 未來 2 小時路段天氣 (若路線足夠長)
+        let distIn2h = speed * 2.0
+        if totalKm > distIn1h + 2.0 {
+            let targetDist = min(totalKm, distIn2h)
+            let pt = pointAtDistance(targetDist, in: track)
+            forecasts.append(buildForecast(
+                name: "+2 小時路段",
+                coord: pt.coordinate,
+                time: now.addingTimeInterval(7200),
+                distKm: targetDist,
+                ele: pt.elevation,
+                isPassed: false,
+                advice: "中後段體能保留，注意山區氣溫與降雨機率。"
+            ))
+        }
+        
+        // 5. 終點完賽預報 (ETA)
+        if let lastPt = track.points.last {
+            let remainingKm = max(0.0, totalKm - currentDistanceKm)
+            let durationToDest = (remainingKm / speed) * 3600.0
+            forecasts.append(buildForecast(
+                name: "預計抵達終點",
+                coord: lastPt.coordinate,
+                time: now.addingTimeInterval(durationToDest),
+                distKm: totalKm,
+                ele: lastPt.elevation,
+                isPassed: false,
+                advice: "終點衝刺與收操，注意降溫防風。"
+            ))
+        }
+        
         return forecasts
+    }
+    
+    private func pointAtDistance(_ targetKm: Double, in track: GPXTrack) -> RoutePoint {
+        guard track.points.count > 1 else { return track.points.first ?? RoutePoint(latitude: 25.033, longitude: 121.565) }
+        var accDist = 0.0
+        for i in 1..<track.points.count {
+            let p1 = CLLocation(latitude: track.points[i-1].latitude, longitude: track.points[i-1].longitude)
+            let p2 = CLLocation(latitude: track.points[i].latitude, longitude: track.points[i].longitude)
+            let seg = p1.distance(from: p2) / 1000.0
+            accDist += seg
+            if accDist >= targetKm {
+                return track.points[i]
+            }
+        }
+        return track.points.last ?? track.points[0]
+    }
+    
+    private func buildForecast(
+        name: String,
+        coord: CLLocationCoordinate2D,
+        time: Date,
+        distKm: Double,
+        ele: Double,
+        isPassed: Bool,
+        advice: String
+    ) -> RouteWeatherForecast {
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: time)
+        
+        var rainProb: Int = 15
+        var cond = "晴朗乾爽"
+        var sym = "sun.max.fill"
+        var actualAdvice = advice
+        
+        if ele > 450 {
+            if hour >= 13 && hour <= 17 {
+                rainProb = 70
+                cond = "午後對流陣雨"
+                sym = "cloud.heavyrain.fill"
+                actualAdvice = "高海拔山區午後易起大霧與雷陣雨，請備風雨衣、開啟車燈！"
+            } else if hour >= 11 && hour < 13 {
+                rainProb = 40
+                cond = "山區雲層增厚"
+                sym = "cloud.sun.fill"
+            } else if hour >= 18 {
+                rainProb = 35
+                cond = "山區降溫薄霧"
+                sym = "cloud.fog.fill"
+            }
+        } else {
+            if hour >= 14 && hour <= 17 {
+                rainProb = 30
+                cond = "多雲偶陣雨"
+                sym = "cloud.sun.rain.fill"
+            }
+        }
+        
+        let calculatedTemp = max(11.0, 28.5 - (ele / 100.0) * 0.65)
+        let windSpd = 10.0 + (ele > 450 ? 10.0 : 4.0)
+        
+        return RouteWeatherForecast(
+            waypointName: name,
+            coordinate: coord,
+            projectedTime: time,
+            distanceKm: distKm,
+            elevationMeters: ele,
+            temperatureC: calculatedTemp,
+            rainProbabilityPercent: rainProb,
+            weatherSymbol: sym,
+            weatherCondition: cond,
+            windSpeedKmh: windSpd,
+            windDirectionDegrees: 45.0,
+            advice: actualAdvice,
+            isPassed: isPassed
+        )
     }
 }

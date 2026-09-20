@@ -2,6 +2,11 @@ import Foundation
 import CoreLocation
 import SwiftUI
 
+// MARK: - App Global Constants
+public struct AppConstants {
+    public static let appName = "VeloDice 騎跡"
+}
+
 // MARK: - Route Point Model
 public struct RoutePoint: Identifiable, Codable, Equatable {
     public var id = UUID()
@@ -11,13 +16,24 @@ public struct RoutePoint: Identifiable, Codable, Equatable {
     public var timestamp: Date?
     public var heartRate: Int?
     public var cadence: Int?
+    public var powerWatts: Int?
     public var speedKmh: Double?
     
     public var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
     
-    public init(id: UUID = UUID(), latitude: Double, longitude: Double, elevation: Double = 0, timestamp: Date? = nil, heartRate: Int? = nil, cadence: Int? = nil, speedKmh: Double? = nil) {
+    public init(
+        id: UUID = UUID(),
+        latitude: Double,
+        longitude: Double,
+        elevation: Double = 0,
+        timestamp: Date? = nil,
+        heartRate: Int? = nil,
+        cadence: Int? = nil,
+        powerWatts: Int? = nil,
+        speedKmh: Double? = nil
+    ) {
         self.id = id
         self.latitude = latitude
         self.longitude = longitude
@@ -25,6 +41,7 @@ public struct RoutePoint: Identifiable, Codable, Equatable {
         self.timestamp = timestamp
         self.heartRate = heartRate
         self.cadence = cadence
+        self.powerWatts = powerWatts
         self.speedKmh = speedKmh
     }
 }
@@ -75,13 +92,13 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
         var maxEle = points.first?.elevation ?? 0.0
         var minEle = points.first?.elevation ?? 0.0
         
-        // 1. 計算真實累積里程 (濾除 GPS 定位漂移)
+        // 1. 計算真實累積里程 (過濾 GPS 定位漂移)
         if points.count > 1 {
             for i in 1..<points.count {
                 let p1 = CLLocation(latitude: points[i-1].latitude, longitude: points[i-1].longitude)
                 let p2 = CLLocation(latitude: points[i].latitude, longitude: points[i].longitude)
                 let stepMeters = p1.distance(from: p2)
-                // 排除原地 < 1.0m 微小抖動與 > 300m 異常瞬移雜訊
+                // 排除原地 < 0.5m 微小抖動與 > 300m 異常瞬移雜訊
                 if stepMeters >= 0.5 && stepMeters < 300.0 {
                     dist += (stepMeters / 1000.0)
                 }
@@ -90,7 +107,7 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
             }
         }
         
-        // 2. 專業級海拔濾波 (移動平均 + 自適應遲滯閾值演算法，精確捕捉坡度與爬升，杜絕 0m 誤判)
+        // 2. 專業級海拔濾波 (移動平均 + 自適應遲滯門檻演算法)
         var smoothedElevations: [Double] = []
         let windowSize = min(5, max(1, points.count))
         let count = points.count
@@ -106,7 +123,7 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
         var descent = 0.0
         if let first = smoothedElevations.first {
             var anchorEle = first
-            let threshold = 0.8 // 0.8 公尺爬升門檻，敏銳捕捉坡度變化，防止平緩上坡被誤過濾為 0
+            let threshold = 0.8 // 0.8 公尺爬升門檻
             
             for i in 1..<smoothedElevations.count {
                 let current = smoothedElevations[i]
@@ -115,7 +132,6 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
                     ascent += diff
                     anchorEle = current
                     
-                    // 記錄上坡區段里程
                     let p1 = CLLocation(latitude: points[i-1].latitude, longitude: points[i-1].longitude)
                     let p2 = CLLocation(latitude: points[i].latitude, longitude: points[i].longitude)
                     uphillDistKm += (p1.distance(from: p2) / 1000.0)
@@ -126,7 +142,6 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
             }
         }
         
-        // 物理保證：若最高海拔與最低海拔有落差，累計爬升至少應達到高度落差
         let elevationSpan = max(0.0, maxEle - minEle)
         if elevationSpan >= 2.0 && ascent < elevationSpan {
             ascent = max(ascent, elevationSpan)
@@ -138,7 +153,6 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
         self.maxElevationMeters = maxEle
         self.minElevationMeters = minEle
         
-        // 坡度計算：以上坡路段真實平均坡度計算，若上坡里程不足則以全段計算
         if uphillDistKm >= 0.1 && ascent > 0.0 {
             self.avgGradientPercent = (ascent / (uphillDistKm * 1000.0)) * 100.0
         } else if dist > 0.05 && ascent > 0.0 {
@@ -148,7 +162,6 @@ public struct GPXTrack: Identifiable, Codable, Equatable {
         }
     }
     
-    /// 計算每一點沿線的真實累積里程 (單位: km)，用於高程剖面圖保持物理等比例
     public func cumulativeDistances() -> [Double] {
         guard points.count > 1 else { return [0.0] }
         var result: [Double] = [0.0]
@@ -220,27 +233,27 @@ public struct SupplyPoint: Identifiable, Equatable, Hashable {
         }
     }
     
-    public static func == (lhs: SupplyPoint, rhs: SupplyPoint) -> Bool {
-        lhs.id == rhs.id
-    }
-    
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
     
-    public enum SupplyCategory: String, CaseIterable {
+    public static func == (lhs: SupplyPoint, rhs: SupplyPoint) -> Bool {
+        lhs.id == rhs.id
+    }
+    
+    public enum SupplyCategory: String, Codable, CaseIterable {
         case convenienceStore = "便利商店"
         case gasStation = "加油站"
-        case waterStation = "補水點 / 飲水處"
-        case bikeShop = "單車補給/維修"
-        case restaurant = "餐廳 / 補給站"
+        case waterStation = "鐵馬驛站/奉茶"
+        case bikeShop = "單車店"
+        case restaurant = "餐飲/小吃"
         
         public var icon: String {
             switch self {
             case .convenienceStore: return "storefront.fill"
             case .gasStation: return "fuelpump.fill"
             case .waterStation: return "drop.fill"
-            case .bikeShop: return "bicycle"
+            case .bikeShop: return "wrench.and.screwdriver.fill"
             case .restaurant: return "fork.knife"
             }
         }
@@ -257,7 +270,7 @@ public struct SupplyPoint: Identifiable, Equatable, Hashable {
     }
 }
 
-// MARK: - Weather Point Forecast Along Route (沿途路段路過時間與降雨機率預報)
+// MARK: - Weather Point Forecast Along Route
 public enum WindRelativeDirection {
     case headwind   // 逆風 (Red)
     case tailwind   // 順風 (Green)
@@ -312,7 +325,6 @@ public struct RouteWeatherForecast: Identifiable {
         self.isPassed = isPassed
     }
     
-    // 風向文字描述 (例: 東北風、西南風)
     public var windCompassText: String {
         let deg = Int(windDirectionDegrees) % 360
         switch deg {
@@ -328,7 +340,6 @@ public struct RouteWeatherForecast: Identifiable {
         }
     }
     
-    // 相對於騎乘前進方向之風向研判：逆風(紅色)、順風(綠色)、側風(黃橘色)
     public func relativeWind(to userHeading: Double?) -> (type: WindRelativeDirection, description: String, color: Color) {
         guard let heading = userHeading, heading >= 0 else {
             return (.crosswind, "\(windCompassText) \(Int(windSpeedKmh)) km/h", .orange)
@@ -362,7 +373,6 @@ public struct SegmentRecord: Identifiable, Codable {
     public var latestAttemptSeconds: TimeInterval?
     public var attemptCount: Int
     
-    // 最近刪除與 3 個月 (90天) 永久刪除機制
     public var isDeleted: Bool = false
     public var deletedAt: Date? = nil
     
@@ -462,11 +472,12 @@ public struct ActivitySummary {
     public var avgHeartRateBpm: Int
     public var maxHeartRateBpm: Int
     public var avgCadenceRpm: Int
+    public var avgPowerWatts: Int?
     public var calories: Int
     public var trackPoints: [RoutePoint]
 }
 
-// MARK: - Segment Effort (Strava-style Segment Performance in a Workout)
+// MARK: - Segment Effort
 public struct SegmentEffort: Identifiable, Codable, Equatable {
     public var id: UUID
     public var segmentId: UUID?
@@ -504,7 +515,7 @@ public struct SegmentEffort: Identifiable, Codable, Equatable {
     }
 }
 
-// MARK: - Strava-style Career All-Time Records (歷年最高、最長、極限紀錄)
+// MARK: - Strava-style Career All-Time Records
 public struct CareerAllTimeStats: Codable, Equatable {
     public var totalRides: Int = 0
     public var totalDistanceKm: Double = 0.0
@@ -539,7 +550,7 @@ public struct CareerAllTimeStats: Codable, Equatable {
     }
 }
 
-// MARK: - Saved User Activity (Strava-style Activity Record)
+// MARK: - Saved User Activity
 public struct SavedActivity: Identifiable, Codable, Equatable {
     public var id: UUID
     public var title: String
@@ -547,17 +558,18 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
     public var date: Date
     public var track: GPXTrack
     public var distanceKm: Double
-    public var durationSeconds: TimeInterval // 總時間 (包含紅綠燈與休息)
-    public var movingDurationSeconds: TimeInterval? // 運動時間 (扣除自動暫停)
+    public var durationSeconds: TimeInterval
+    public var movingDurationSeconds: TimeInterval?
     public var avgSpeedKmh: Double
     public var maxSpeedKmh: Double
     public var totalAscentMeters: Double
     public var avgHeartRateBpm: Int?
     public var avgCadenceRpm: Int?
+    public var avgPowerWatts: Int?
+    public var maxPowerWatts: Int?
     public var photoDataList: [Data]
     public var segmentEfforts: [SegmentEffort]
     
-    // 最近刪除與 3 個月 (90天) 永久刪除機制
     public var isDeleted: Bool = false
     public var deletedAt: Date? = nil
     
@@ -594,6 +606,8 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
         totalAscentMeters: Double,
         avgHeartRateBpm: Int? = nil,
         avgCadenceRpm: Int? = nil,
+        avgPowerWatts: Int? = nil,
+        maxPowerWatts: Int? = nil,
         photoDataList: [Data] = [],
         segmentEfforts: [SegmentEffort] = [],
         isDeleted: Bool = false,
@@ -612,6 +626,8 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
         self.totalAscentMeters = totalAscentMeters
         self.avgHeartRateBpm = avgHeartRateBpm
         self.avgCadenceRpm = avgCadenceRpm
+        self.avgPowerWatts = avgPowerWatts
+        self.maxPowerWatts = maxPowerWatts
         self.photoDataList = photoDataList
         self.segmentEfforts = segmentEfforts
         self.isDeleted = isDeleted
@@ -621,6 +637,7 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, title, note, date, track, distanceKm, durationSeconds, movingDurationSeconds
         case avgSpeedKmh, maxSpeedKmh, totalAscentMeters, avgHeartRateBpm, avgCadenceRpm
+        case avgPowerWatts, maxPowerWatts
         case photoDataList, segmentEfforts, isDeleted, deletedAt
     }
     
@@ -639,6 +656,8 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
         self.totalAscentMeters = try container.decode(Double.self, forKey: .totalAscentMeters)
         self.avgHeartRateBpm = try container.decodeIfPresent(Int.self, forKey: .avgHeartRateBpm)
         self.avgCadenceRpm = try container.decodeIfPresent(Int.self, forKey: .avgCadenceRpm)
+        self.avgPowerWatts = try container.decodeIfPresent(Int.self, forKey: .avgPowerWatts)
+        self.maxPowerWatts = try container.decodeIfPresent(Int.self, forKey: .maxPowerWatts)
         self.photoDataList = try container.decodeIfPresent([Data].self, forKey: .photoDataList) ?? []
         self.segmentEfforts = try container.decodeIfPresent([SegmentEffort].self, forKey: .segmentEfforts) ?? []
         self.isDeleted = try container.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
@@ -646,14 +665,14 @@ public struct SavedActivity: Identifiable, Codable, Equatable {
     }
 }
 
-// MARK: - Standard GPX File Generation Extension (100% Strava, Velodash, Garmin 相容)
+// MARK: - Standard GPX File Generation Extension
 extension GPXTrack {
     public func toGPXString() -> String {
         let isoFormatter = ISO8601DateFormatter()
         let trkName = title.isEmpty ? "Activity_Track" : title.replacingOccurrences(of: "<", with: "").replacingOccurrences(of: ">", with: "")
         var xml = """
         <?xml version="1.0" encoding="UTF-8"?>
-        <gpx version="1.1" creator="VeloDice 騎跡" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+        <gpx version="1.1" creator="\(AppConstants.appName)" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
           <metadata>
             <name>\(trkName)</name>
             <time>\(isoFormatter.string(from: Date()))</time>
@@ -680,13 +699,16 @@ extension GPXTrack {
             if let spd = pt.speedKmh {
                 xml += "        <speed>\(String(format: "%.2f", spd / 3.6))</speed>\n"
             }
-            if pt.heartRate != nil || pt.cadence != nil {
+            if pt.heartRate != nil || pt.cadence != nil || pt.powerWatts != nil {
                 xml += "        <extensions>\n          <gpxtpx:TrackPointExtension>\n"
                 if let hr = pt.heartRate {
                     xml += "            <gpxtpx:hr>\(hr)</gpxtpx:hr>\n"
                 }
                 if let cad = pt.cadence {
                     xml += "            <gpxtpx:cad>\(cad)</gpxtpx:cad>\n"
+                }
+                if let pwr = pt.powerWatts {
+                    xml += "            <gpxtpx:power>\(pwr)</gpxtpx:power>\n"
                 }
                 xml += "          </gpxtpx:TrackPointExtension>\n        </extensions>\n"
             }
@@ -701,7 +723,7 @@ extension GPXTrack {
     }
 }
 
-// MARK: - Native GPX Parser (支援匯入 Velodash、Strava、Garmin、Apple Watch 等過往 GPX 紀錄)
+// MARK: - Native GPX Parser
 public class GPXParser: NSObject, XMLParserDelegate {
     private var points: [RoutePoint] = []
     private var currentLat: Double = 0.0
@@ -711,6 +733,7 @@ public class GPXParser: NSObject, XMLParserDelegate {
     private var currentSpeed: Double?
     private var currentHR: Int?
     private var currentCad: Int?
+    private var currentPower: Int?
     private var trackTitle: String = ""
     private var metadataTitle: String = ""
     private var isInsideTrk = false
@@ -718,7 +741,6 @@ public class GPXParser: NSObject, XMLParserDelegate {
     private var isInsidePoint = false
     private var textBuffer = ""
     
-    // 多格式相容時間解析器 (支援 Velodash/Garmin 毫秒、標準 ISO8601 與時區)
     private static let isoFormatterFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -759,7 +781,7 @@ public class GPXParser: NSObject, XMLParserDelegate {
         let xmlParser = XMLParser(data: data)
         xmlParser.delegate = parser
         if xmlParser.parse() && !parser.points.isEmpty {
-            let finalTitle = !parser.trackTitle.isEmpty ? parser.trackTitle : (!parser.metadataTitle.isEmpty ? parser.metadataTitle : "已匯入活動紀錄")
+            let finalTitle = !parser.trackTitle.isEmpty ? parser.trackTitle : (!parser.metadataTitle.isEmpty ? parser.metadataTitle : "已匯入活動記錄")
             return GPXTrack(title: finalTitle, points: parser.points)
         }
         return nil
@@ -784,6 +806,7 @@ public class GPXParser: NSObject, XMLParserDelegate {
             currentSpeed = nil
             currentHR = nil
             currentCad = nil
+            currentPower = nil
         }
     }
     
@@ -805,6 +828,21 @@ public class GPXParser: NSObject, XMLParserDelegate {
             isInsideTrk = false
         } else if lower == "metadata" {
             isInsideMetadata = false
+        } else if lower == "trkpt" || lower == "rtept" || lower.hasSuffix(":trkpt") || lower.hasSuffix(":rtept") {
+            if abs(currentLat) > 0.01 && abs(currentLon) > 0.01 {
+                let pt = RoutePoint(
+                    latitude: currentLat,
+                    longitude: currentLon,
+                    elevation: currentEle,
+                    timestamp: currentTime,
+                    heartRate: currentHR,
+                    cadence: currentCad,
+                    powerWatts: currentPower,
+                    speedKmh: currentSpeed
+                )
+                points.append(pt)
+            }
+            isInsidePoint = false
         } else if isInsidePoint {
             if lower == "ele" || lower.hasSuffix(":ele") {
                 let cleanStr = trimmed.replacingOccurrences(of: ",", with: ".")
@@ -828,20 +866,11 @@ public class GPXParser: NSObject, XMLParserDelegate {
                 if let d = Double(cleanStr) {
                     currentCad = Int(d)
                 }
-            } else if lower == "trkpt" || lower == "rtept" || lower.hasSuffix(":trkpt") || lower.hasSuffix(":rtept") {
-                if abs(currentLat) > 0.01 && abs(currentLon) > 0.01 {
-                    let pt = RoutePoint(
-                        latitude: currentLat,
-                        longitude: currentLon,
-                        elevation: currentEle,
-                        timestamp: currentTime,
-                        heartRate: currentHR,
-                        cadence: currentCad,
-                        speedKmh: currentSpeed
-                    )
-                    points.append(pt)
+            } else if lower.hasSuffix("power") || lower.hasSuffix(":power") || lower == "power" {
+                let cleanStr = trimmed.replacingOccurrences(of: ",", with: ".")
+                if let d = Double(cleanStr) {
+                    currentPower = Int(d)
                 }
-                isInsidePoint = false
             }
         }
     }

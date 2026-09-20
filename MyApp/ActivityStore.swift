@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import CoreLocation
 
 @MainActor
 public class ActivityStore: ObservableObject {
@@ -99,53 +100,63 @@ public class ActivityStore: ObservableObject {
         let matchedEfforts = evaluateSegmentEfforts(for: mutableActivity)
         mutableActivity.segmentEfforts = matchedEfforts
         
+        self.activities.removeAll(where: { $0.id == mutableActivity.id })
         self.activities.insert(mutableActivity, at: 0)
         persistActivities()
-        persistSegments()
+        
+        // 同步更新路段的 PR 記錄
+        recalculateAllSegmentPRs()
     }
     
-    /// 軟刪除活動（移至「最近刪除」，3 個月內可恢復）
     public func softDeleteActivity(id: UUID) {
-        if let idx = self.activities.firstIndex(where: { $0.id == id }) {
-            self.activities[idx].isDeleted = true
-            self.activities[idx].deletedAt = Date()
+        if let idx = activities.firstIndex(where: { $0.id == id }) {
+            activities[idx].isDeleted = true
+            activities[idx].deletedAt = Date()
             persistActivities()
         }
     }
     
-    /// 恢復已刪除的活動
     public func restoreActivity(id: UUID) {
-        if let idx = self.activities.firstIndex(where: { $0.id == id }) {
-            self.activities[idx].isDeleted = false
-            self.activities[idx].deletedAt = nil
+        if let idx = activities.firstIndex(where: { $0.id == id }) {
+            activities[idx].isDeleted = false
+            activities[idx].deletedAt = nil
             persistActivities()
         }
     }
     
-    /// 立即永久刪除活動
     public func permanentlyDeleteActivity(id: UUID) {
-        self.activities.removeAll(where: { $0.id == id })
+        activities.removeAll(where: { $0.id == id })
         persistActivities()
+        recalculateAllSegmentPRs()
     }
     
-    /// 清空最近刪除的全部活動
     public func emptyTrashActivities() {
-        self.activities.removeAll(where: { $0.isDeleted })
+        activities.removeAll(where: { $0.isDeleted })
         persistActivities()
+        recalculateAllSegmentPRs()
     }
     
-    /// 舊有相容介面（預設為軟刪除移至最近刪除）
     public func deleteActivity(at offsets: IndexSet) {
         let currentActive = activeActivities
-        for offset in offsets {
-            if currentActive.indices.contains(offset) {
-                softDeleteActivity(id: currentActive[offset].id)
+        for idx in offsets {
+            if currentActive.indices.contains(idx) {
+                softDeleteActivity(id: currentActive[idx].id)
             }
         }
     }
     
-    public func deleteActivity(id: UUID) {
-        softDeleteActivity(id: id)
+    public func exportGPXFile(for activity: SavedActivity) -> URL? {
+        let gpxString = activity.track.toGPXString()
+        let cleanTitle = activity.title.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "/", with: "_")
+        let fileName = "\(cleanTitle)_\(activity.date.formatted(date: .numeric, time: .omitted)).gpx"
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        do {
+            try gpxString.write(to: tempURL, atomically: true, encoding: .utf8)
+            return tempURL
+        } catch {
+            print("Failed to export GPX: \(error)")
+            return nil
+        }
     }
     
     private func persistActivities() {
@@ -157,45 +168,33 @@ public class ActivityStore: ObservableObject {
         }
     }
     
-    // MARK: - Segment Management & Personal Records (PR)
+    // MARK: - Segments Management
     public func loadSegments() {
         if FileManager.default.fileExists(atPath: segmentsFileURL.path) {
             do {
                 let data = try Data(contentsOf: segmentsFileURL)
                 let decoded = try JSONDecoder().decode([SegmentRecord].self, from: data)
                 self.segments = decoded
-                return
             } catch {
-                print("Failed to load custom segments: \(error)")
+                print("Failed to load segments: \(error)")
+                self.segments = defaultClassicSegments()
             }
+        } else {
+            self.segments = defaultClassicSegments()
+            persistSegments()
         }
-        
-        // 預設經典自行車挑戰路段
-        self.segments = defaultClassicSegments()
-        persistSegments()
+        recalculateAllSegmentPRs()
     }
     
-    // MARK: - Default Classic Segments (經典爬坡路段)
     public func defaultClassicSegments() -> [SegmentRecord] {
-        return [
+        [
             SegmentRecord(
-                name: "風櫃嘴經典計時賽段 (楓林橋至涼亭)",
-                startCoordinate: RoutePoint(latitude: 25.1182, longitude: 121.5794, elevation: 185.0),
-                endCoordinate: RoutePoint(latitude: 25.1378, longitude: 121.6012, elevation: 597.0),
+                name: "風櫃嘴經典爬坡計時段 (楓林橋至頂點涼亭)",
+                startCoordinate: RoutePoint(latitude: 25.1186, longitude: 121.5878, elevation: 180.0),
+                endCoordinate: RoutePoint(latitude: 25.1378, longitude: 121.6022, elevation: 597.0),
                 distanceKm: 6.4,
-                elevationGainMeters: 412.0,
-                avgGradientPercent: 6.4,
-                personalRecordSeconds: nil,
-                latestAttemptSeconds: nil,
-                attemptCount: 0
-            ),
-            SegmentRecord(
-                name: "冷水坑爬坡挑戰 (平等里至遊客中心)",
-                startCoordinate: RoutePoint(latitude: 25.1311, longitude: 121.5742, elevation: 380.0),
-                endCoordinate: RoutePoint(latitude: 25.1662, longitude: 121.5629, elevation: 740.0),
-                distanceKm: 7.8,
-                elevationGainMeters: 360.0,
-                avgGradientPercent: 4.6,
+                elevationGainMeters: 417.0,
+                avgGradientPercent: 6.5,
                 personalRecordSeconds: nil,
                 latestAttemptSeconds: nil,
                 attemptCount: 0
@@ -240,6 +239,80 @@ public class ActivityStore: ObservableObject {
         self.segments.append(seg)
         persistSegments()
         recalculateAllSegmentPRs()
+    }
+    
+    /// 智慧歷史路段探勘：自動從用戶的所有歷史運動活動中，分析高爬升（>75m）、距離適中（1.5km~12km）且具代表性的經典路段，自動加入並計算歷次 PR
+    @discardableResult
+    public func autoDiscoverSegmentsFromHistory() -> Int {
+        var discoveredCount = 0
+        let validActs = activeActivities.filter { $0.distanceKm >= 2.0 && $0.track.points.count >= 15 }
+        
+        for act in validActs {
+            let pts = act.track.points
+            guard pts.count >= 10 else { continue }
+            
+            var bestStart = 0
+            var bestEnd = pts.count - 1
+            var maxGain = 0.0
+            
+            for i in 0..<(pts.count - 5) {
+                let pStart = pts[i]
+                for j in (i + 5)..<pts.count {
+                    let pEnd = pts[j]
+                    let gain = pEnd.elevation - pStart.elevation
+                    let dist = CLLocation(latitude: pStart.latitude, longitude: pStart.longitude)
+                        .distance(from: CLLocation(latitude: pEnd.latitude, longitude: pEnd.longitude)) / 1000.0
+                    
+                    if gain >= 75.0 && dist >= 1.5 && dist <= 12.0 {
+                        if gain > maxGain {
+                            maxGain = gain
+                            bestStart = i
+                            bestEnd = j
+                        }
+                    }
+                }
+            }
+            
+            if maxGain >= 75.0 {
+                let pS = pts[bestStart]
+                let pE = pts[bestEnd]
+                let dist = max(1.5, CLLocation(latitude: pS.latitude, longitude: pS.longitude)
+                    .distance(from: CLLocation(latitude: pE.latitude, longitude: pE.longitude)) / 1000.0)
+                let grad = (maxGain / (dist * 1000.0)) * 100.0
+                
+                // 檢查是否與現存路段重複
+                let isDuplicate = segments.contains { seg in
+                    let sDist = CLLocation(latitude: seg.startCoordinate.latitude, longitude: seg.startCoordinate.longitude)
+                        .distance(from: CLLocation(latitude: pS.latitude, longitude: pS.longitude))
+                    let eDist = CLLocation(latitude: seg.endCoordinate.latitude, longitude: seg.endCoordinate.longitude)
+                        .distance(from: CLLocation(latitude: pE.latitude, longitude: pE.longitude))
+                    return sDist < 400.0 && eDist < 400.0
+                }
+                
+                if !isDuplicate {
+                    let segName = "\(act.title) · 經典爬坡挑戰段"
+                    let newSeg = SegmentRecord(
+                        name: segName,
+                        startCoordinate: RoutePoint(latitude: pS.latitude, longitude: pS.longitude, elevation: pS.elevation),
+                        endCoordinate: RoutePoint(latitude: pE.latitude, longitude: pE.longitude, elevation: pE.elevation),
+                        distanceKm: dist,
+                        elevationGainMeters: maxGain,
+                        avgGradientPercent: grad,
+                        personalRecordSeconds: nil,
+                        latestAttemptSeconds: nil,
+                        attemptCount: 0
+                    )
+                    self.segments.append(newSeg)
+                    discoveredCount += 1
+                }
+            }
+        }
+        
+        if discoveredCount > 0 {
+            persistSegments()
+            recalculateAllSegmentPRs()
+        }
+        return discoveredCount
     }
     
     // MARK: - Delete & Restore Segments (支援軟刪除移至最近刪除、復原與 3 個月永久刪除)
@@ -329,7 +402,7 @@ public class ActivityStore: ObservableObject {
         return restoredCount
     }
     
-    // MARK: - 3 個月 (90天) 自動永久清理過期已刪除項目 (背景安靜執行，保證隱私與儲存空間)
+    // MARK: - 3 個月 (90天) 自動永久清理過期已刪除項目
     public func cleanupExpiredDeletedItems() {
         let beforeActCount = activities.count
         activities.removeAll(where: { $0.isExpiredForPermanentDelete })
@@ -365,7 +438,6 @@ public class ActivityStore: ObservableObject {
             let startCoord = CLLocation(latitude: seg.startCoordinate.latitude, longitude: seg.startCoordinate.longitude)
             let endCoord = CLLocation(latitude: seg.endCoordinate.latitude, longitude: seg.endCoordinate.longitude)
             
-            // 1. 尋找活動軌跡中，最接近路段起點的座標點 (判定門檻放寬至 200 公尺，相容各品牌車錶抽樣頻率與衛星誤差)
             var bestStartIndex: Int? = nil
             var minStartDist = 200.0
             for (idx, pt) in pts.enumerated() {
@@ -379,7 +451,6 @@ public class ActivityStore: ObservableObject {
             
             guard let sIdx = bestStartIndex else { continue }
             
-            // 2. 從通過起點後的座標中，尋找最接近路段終點的座標點 (判定門檻: 200 公尺內)
             var bestEndIndex: Int? = nil
             var minEndDist = 200.0
             for idx in (sIdx + 1)..<pts.count {
@@ -393,7 +464,6 @@ public class ActivityStore: ObservableObject {
             
             guard let eIdx = bestEndIndex, eIdx > sIdx else { continue }
             
-            // 3. 計算活動在起點與終點之間的實際騎行里程
             var actualEffortDistKm = 0.0
             for k in sIdx..<eIdx {
                 let p1 = CLLocation(latitude: pts[k].latitude, longitude: pts[k].longitude)
@@ -401,12 +471,10 @@ public class ActivityStore: ObservableObject {
                 actualEffortDistKm += p1.distance(from: p2) / 1000.0
             }
             
-            // 4. 幾何距離驗證：實際騎行距離落在路段標準里程的 55% ~ 160% 範圍內
             let lowerBound = seg.distanceKm * 0.55
             let upperBound = seg.distanceKm * 1.60
             guard actualEffortDistKm >= lowerBound && actualEffortDistKm <= upperBound else { continue }
             
-            // 5. 計算通過該路段所耗費的真實秒數
             var effortDuration: TimeInterval = 0
             if let tStart = pts[sIdx].timestamp, let tEnd = pts[eIdx].timestamp {
                 effortDuration = max(1.0, tEnd.timeIntervalSince(tStart))
@@ -415,38 +483,21 @@ public class ActivityStore: ObservableObject {
                 effortDuration = max(1.0, (actualEffortDistKm / fallbackSpeed) * 3600.0)
             }
             
-            // 速度合規性檢查 (避免瞬移或不合理過慢停滯)
             let effortSpeed = actualEffortDistKm / (effortDuration / 3600.0)
             guard effortSpeed >= 2.0 && effortSpeed <= 90.0 else { continue }
             
-            // 6. 計算該路段內的真實累積爬升
-            var segAscent = 0.0
-            for k in sIdx..<eIdx {
-                let diff = pts[k+1].elevation - pts[k].elevation
-                if diff > 0.5 { segAscent += diff }
-            }
-            let effortAscent = segAscent > 0 ? segAscent : seg.elevationGainMeters
-            
-            // 7. PR 紀錄更新判定
-            var isNewPR = false
-            if let currentPR = seg.personalRecordSeconds {
-                if effortDuration < currentPR {
-                    isNewPR = true
-                    segments[i].personalRecordSeconds = effortDuration
-                }
+            let isNewPR: Bool
+            if let existingPR = seg.personalRecordSeconds {
+                isNewPR = effortDuration < existingPR
             } else {
                 isNewPR = true
-                segments[i].personalRecordSeconds = effortDuration
             }
-            
-            segments[i].latestAttemptSeconds = effortDuration
-            segments[i].attemptCount += 1
             
             let effort = SegmentEffort(
                 segmentId: seg.id,
                 segmentName: seg.name,
                 distanceKm: actualEffortDistKm,
-                elevationGainMeters: effortAscent,
+                elevationGainMeters: seg.elevationGainMeters,
                 avgGradientPercent: seg.avgGradientPercent,
                 timeSeconds: effortDuration,
                 avgSpeedKmh: effortSpeed,
@@ -459,222 +510,113 @@ public class ActivityStore: ObservableObject {
         return efforts
     }
     
-    // MARK: - Recalculate All Segment PRs (清除錯誤幽靈紀錄並重新比對所有活動)
-    public struct RecalculateReport {
-        public let scannedActivities: Int
-        public let matchedSegmentsCount: Int
-        public let newPRCount: Int
-        public let matchedDetails: [String]
-        public let message: String
-    }
-    
-    @discardableResult
-    public func recalculateAllSegmentPRs() -> RecalculateReport {
-        // 重設所有路段挑戰紀錄為乾淨狀態
+    public func recalculateAllSegmentPRs() {
+        let validActs = activeActivities.sorted(by: { $0.date < $1.date })
+        
         for i in 0..<segments.count {
-            segments[i].personalRecordSeconds = nil
-            segments[i].latestAttemptSeconds = nil
-            segments[i].attemptCount = 0
-        }
-        
-        // 依日期由舊至新排序重新比對，精準重現真實 PR 推進軌跡
-        let sortedActivities = activities.sorted(by: { $0.date < $1.date })
-        var totalMatched = 0
-        var totalPRs = 0
-        var details: [String] = []
-        
-        for activity in sortedActivities {
-            let matched = evaluateSegmentEfforts(for: activity)
-            if let actIdx = activities.firstIndex(where: { $0.id == activity.id }) {
-                activities[actIdx].segmentEfforts = matched
-            }
-            for effort in matched {
-                totalMatched += 1
-                if effort.isPR {
-                    totalPRs += 1
-                    let mins = Int(effort.timeSeconds) / 60
-                    let secs = Int(effort.timeSeconds) % 60
-                    details.append("🏆 \(effort.segmentName)：\(String(format: "%02d:%02d", mins, secs)) (\(String(format: "%.1f", effort.avgSpeedKmh)) km/h)")
+            let segId = segments[i].id
+            var attempts: [(duration: TimeInterval, date: Date)] = []
+            
+            for act in validActs {
+                for effort in act.segmentEfforts where effort.segmentId == segId {
+                    attempts.append((effort.timeSeconds, act.date))
                 }
-            }
-        }
-        
-        persistActivities()
-        persistSegments()
-        
-        let msg: String
-        if totalMatched > 0 {
-            msg = "🎉 路段校正完成！\n\n已掃描 \(activities.count) 筆歷史運動紀錄，成功比對出 \(totalMatched) 次路段挑戰，目前榮獲 \(totalPRs) 項路段最佳 (PR)！\n\n\(details.joined(separator: "\n"))"
-        } else {
-            msg = "ℹ️ 路段校正完成\n\n已掃描 \(activities.count) 筆歷史運動紀錄。\n目前未偵測到與系統預設經典路段（風櫃嘴、冷水坑、中社路、巴拉卡）重合之軌跡。\n\n💡 提示：若您的騎行紀錄位於其他山路或自選路線，您可在該活動詳情中點選「以此活動建立挑戰路段」，系統會自動提取起終點與坡度並即時計算個人 PR！"
-        }
-        
-        return RecalculateReport(
-            scannedActivities: activities.count,
-            matchedSegmentsCount: totalMatched,
-            newPRCount: totalPRs,
-            matchedDetails: details,
-            message: msg
-        )
-    }
-    
-    // MARK: - Create Custom Segment directly from a Saved Activity
-    @discardableResult
-    public func createSegment(from activity: SavedActivity, customName: String? = nil) -> SegmentRecord? {
-        guard let first = activity.track.points.first, let last = activity.track.points.last, activity.distanceKm >= 0.2 else {
-            return nil
-        }
-        
-        let segTitle = (customName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-            ? customName!
-            : "\(activity.title) 挑戰段"
-        
-        let newSeg = SegmentRecord(
-            name: segTitle,
-            startCoordinate: first,
-            endCoordinate: last,
-            distanceKm: activity.distanceKm,
-            elevationGainMeters: activity.totalAscentMeters,
-            avgGradientPercent: activity.track.avgGradientPercent,
-            personalRecordSeconds: activity.effectiveMovingDuration,
-            latestAttemptSeconds: activity.effectiveMovingDuration,
-            attemptCount: 1
-        )
-        
-        self.segments.append(newSeg)
-        persistSegments()
-        recalculateAllSegmentPRs()
-        return newSeg
-    }
-    
-    // MARK: - Import Past Activity Records from GPX File (支援從 Velodash / Strava / Garmin 匯入)
-    @discardableResult
-    public func importActivityFromGPX(url: URL) throws -> SavedActivity {
-        let shouldStopAccess = url.startAccessingSecurityScopedResource()
-        defer {
-            if shouldStopAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-        
-        let data = try Data(contentsOf: url)
-        guard let track = GPXParser.parse(data: data), !track.points.isEmpty else {
-            throw NSError(domain: "GPXImportError", code: -1, userInfo: [NSLocalizedDescriptionKey: "無法解析此 GPX 檔案或檔案中沒有座標軌跡點。"])
-        }
-        
-        let fallbackName = url.deletingPathExtension().lastPathComponent
-        let title = (track.title.isEmpty || track.title == "已匯入活動紀錄") ? fallbackName : track.title
-        let date = track.points.first?.timestamp ?? Date()
-        
-        var totalElapsed: TimeInterval = 0
-        var movingTime: TimeInterval = 0
-        var maxSpeed: Double = 0.0
-        
-        let pts = track.points
-        if pts.count > 1 {
-            // 1. 計算總時間 (以首尾有效時間戳為準)
-            if let firstTime = pts.first?.timestamp, let lastTime = pts.last?.timestamp {
-                totalElapsed = max(1.0, lastTime.timeIntervalSince(firstTime))
             }
             
-            // 2. 計算動態運動時間 (Moving Time) 與最高時速 (濾除紅綠燈與休息長時間停等)
-            for i in 1..<pts.count {
-                let p1 = pts[i-1]
-                let p2 = pts[i]
-                let loc1 = CLLocation(latitude: p1.latitude, longitude: p1.longitude)
-                let loc2 = CLLocation(latitude: p2.latitude, longitude: p2.longitude)
-                let distM = loc1.distance(from: loc2)
-                
-                var dt: TimeInterval = 1.0
-                var hasValidDt = false
-                if let t1 = p1.timestamp, let t2 = p2.timestamp {
-                    let diff = t2.timeIntervalSince(t1)
-                    if diff > 0.05 {
-                        dt = diff
-                        hasValidDt = true
-                    }
-                }
-                
-                // 計算單點瞬時速度
-                var ptSpeedKmh: Double = 0.0
-                if let spd = p2.speedKmh, spd > 0 {
-                    ptSpeedKmh = spd
-                } else if hasValidDt && dt < 60.0 {
-                    ptSpeedKmh = (distM / dt) * 3.6
-                }
-                
-                // 排除 > 95 km/h 的 GPS 瞬間漂移假訊號
-                if ptSpeedKmh > 0 && ptSpeedKmh <= 95.0 {
-                    if ptSpeedKmh > maxSpeed {
-                        maxSpeed = ptSpeedKmh
-                    }
-                }
-                
-                // 動態時間累加：速度 >= 1.8 km/h 且時間間隔小於 35 秒 (排除長時間停等紅綠燈或休息)
-                if hasValidDt {
-                    if dt <= 35.0 && (ptSpeedKmh >= 1.8 || distM >= 3.0) {
-                        movingTime += dt
-                    }
-                } else {
-                    if distM >= 2.5 {
-                        movingTime += 1.0
+            if attempts.isEmpty {
+                for act in validActs {
+                    let matched = evaluateSegmentEfforts(for: act)
+                    for effort in matched where effort.segmentId == segId {
+                        attempts.append((effort.timeSeconds, act.date))
                     }
                 }
             }
+            
+            segments[i].attemptCount = attempts.count
+            segments[i].latestAttemptSeconds = attempts.last?.duration
+            segments[i].personalRecordSeconds = attempts.map(\.duration).min()
         }
         
-        // 若完全缺少時間戳，則採用真實平均時速合理推算
-        if totalElapsed <= 0 {
-            totalElapsed = max(60.0, (track.totalDistanceKm / 22.0) * 3600.0)
+        persistSegments()
+    }
+    
+    public func createSegment(from activity: SavedActivity) -> SegmentRecord? {
+        guard let start = activity.track.points.first,
+              let end = activity.track.points.last,
+              activity.distanceKm >= 0.3 else { return nil }
+        
+        let grad = activity.totalAscentMeters > 0 ? (activity.totalAscentMeters / (activity.distanceKm * 1000.0)) * 100.0 : 0.0
+        let seg = SegmentRecord(
+            name: "\(activity.title) 挑戰段",
+            startCoordinate: start,
+            endCoordinate: end,
+            distanceKm: activity.distanceKm,
+            elevationGainMeters: activity.totalAscentMeters,
+            avgGradientPercent: grad,
+            personalRecordSeconds: activity.effectiveMovingDuration > 0 ? activity.effectiveMovingDuration : activity.durationSeconds,
+            latestAttemptSeconds: activity.effectiveMovingDuration > 0 ? activity.effectiveMovingDuration : activity.durationSeconds,
+            attemptCount: 1
+        )
+        self.segments.append(seg)
+        persistSegments()
+        recalculateAllSegmentPRs()
+        return seg
+    }
+
+    public func importActivityFromGPX(url: URL) throws -> SavedActivity {
+        let shouldStop = url.startAccessingSecurityScopedResource()
+        defer { if shouldStop { url.stopAccessingSecurityScopedResource() } }
+        let data = try Data(contentsOf: url)
+        guard let track = GPXParser.parse(data: data), !track.points.isEmpty else {
+            throw NSError(domain: "GPXImport", code: -1, userInfo: [NSLocalizedDescriptionKey: "無法解析此 GPX 檔案，或軌跡點為空"])
         }
-        if movingTime <= 0 || movingTime > totalElapsed {
-            movingTime = totalElapsed
+        
+        let title = track.title.trimmingCharacters(in: .whitespaces).isEmpty ? (url.deletingPathExtension().lastPathComponent) : track.title
+        let date = track.points.first?.timestamp ?? Date()
+        
+        var duration: TimeInterval = 0
+        if let first = track.points.first?.timestamp, let last = track.points.last?.timestamp {
+            duration = max(0, last.timeIntervalSince(first))
+        }
+        if duration <= 0 {
+            duration = (track.totalDistanceKm / 20.0) * 3600.0
         }
         
-        let effectiveMovingDuration = max(1.0, movingTime)
-        let avgSpeed = track.totalDistanceKm / (effectiveMovingDuration / 3600.0)
+        let avgSpeed = duration > 0 ? (track.totalDistanceKm / (duration / 3600.0)) : 20.0
+        let maxSpeed = track.points.compactMap(\.speedKmh).max() ?? (avgSpeed * 1.3)
         
-        let hrPoints = track.points.compactMap(\.heartRate).filter { $0 >= 40 && $0 <= 230 }
-        let avgHR = hrPoints.isEmpty ? nil : Int(hrPoints.reduce(0, +) / hrPoints.count)
-        let cadPoints = track.points.compactMap(\.cadence).filter { $0 > 0 && $0 <= 200 }
-        let avgCad = cadPoints.isEmpty ? nil : Int(cadPoints.reduce(0, +) / cadPoints.count)
+        let cads = track.points.compactMap(\.cadence).filter { $0 > 0 }
+        let avgCad = cads.isEmpty ? nil : (cads.reduce(0, +) / cads.count)
         
-        let importedActivity = SavedActivity(
+        let hrs = track.points.compactMap(\.heartRate).filter { $0 > 0 }
+        let avgHR = hrs.isEmpty ? nil : (hrs.reduce(0, +) / hrs.count)
+        
+        let pows = track.points.compactMap(\.powerWatts).filter { $0 > 0 }
+        let avgPower = pows.isEmpty ? nil : (pows.reduce(0, +) / pows.count)
+        let maxPower = pows.max()
+        
+        var activity = SavedActivity(
             title: title,
-            note: "從外部 GPX 軌跡匯入 (已精準校正數據與高程)",
             date: date,
             track: track,
             distanceKm: track.totalDistanceKm,
-            durationSeconds: totalElapsed,
-            movingDurationSeconds: movingTime,
+            durationSeconds: duration,
+            movingDurationSeconds: duration,
             avgSpeedKmh: avgSpeed,
-            maxSpeedKmh: maxSpeed > 0 ? maxSpeed : avgSpeed * 1.3,
+            maxSpeedKmh: maxSpeed,
             totalAscentMeters: track.totalAscentMeters,
             avgHeartRateBpm: avgHR,
             avgCadenceRpm: avgCad,
-            photoDataList: []
+            avgPowerWatts: avgPower,
+            maxPowerWatts: maxPower,
+            segmentEfforts: []
         )
         
-        self.saveActivity(importedActivity)
-        return importedActivity
+        activity.segmentEfforts = evaluateSegmentEfforts(for: activity)
+        self.activities.insert(activity, at: 0)
+        persistActivities()
+        recalculateAllSegmentPRs()
+        return activity
     }
-    
-    // MARK: - GPX File Export Utility
-    public func exportGPXFile(for activity: SavedActivity) -> URL? {
-        let gpxString = activity.track.toGPXString()
-        let safeTitle = activity.title
-            .replacingOccurrences(of: " ", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "-")
-        let fileName = "\(safeTitle).gpx"
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
-        
-        do {
-            try gpxString.write(to: tempURL, atomically: true, encoding: .utf8)
-            return tempURL
-        } catch {
-            print("Failed to write GPX export file: \(error)")
-            return nil
-        }
-    }
+
 }

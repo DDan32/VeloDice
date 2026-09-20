@@ -26,6 +26,7 @@ public struct LiveHUDDashboardView: View {
     @State private var snapshotAscent: Double = 0
     @State private var snapshotHR: Int? = nil
     @State private var snapshotCadence: Int? = nil
+    @State private var snapshotPower: Int? = nil
     
     // Bluetooth Sensor Sheet
     @State private var showBluetoothSheet: Bool = false
@@ -58,7 +59,7 @@ public struct LiveHUDDashboardView: View {
                 // Workout Control Bar (Start / Pause / Resume / Stop)
                 workoutControlCenter
                 
-                // Primary Metric HUD (Speed, Time, Distance, HR, Cadence, Elevation)
+                // Primary Metric HUD (Speed, Time, Distance, HR, Cadence, Elevation, Power)
                 primaryMetricGrid
                 
                 // AI ETA & Arrival Predictor Card
@@ -75,6 +76,9 @@ public struct LiveHUDDashboardView: View {
         .onChange(of: tracker.currentDistanceKm) { _ in
             updateAIPredictionAndWeather()
         }
+        .onChange(of: tracker.currentUserLocation?.coordinate.latitude) { _ in
+            updateAIPredictionAndWeather()
+        }
         .sheet(isPresented: $showSaveWorkoutSheet) {
             if let finTrack = finishedTrackToSave {
                 SaveWorkoutSheet(
@@ -85,6 +89,7 @@ public struct LiveHUDDashboardView: View {
                     totalAscentMeters: snapshotAscent,
                     avgHeartRate: snapshotHR,
                     avgCadence: snapshotCadence,
+                    avgPowerWatts: snapshotPower,
                     onSaved: { saved in
                         showSaveWorkoutSheet = false
                         tracker.resetAllMetrics()
@@ -140,14 +145,14 @@ public struct LiveHUDDashboardView: View {
                         if tracker.currentStepIndex + 1 < tracker.activeNavigationSteps.count {
                             let nextStep = tracker.activeNavigationSteps[tracker.currentStepIndex + 1]
                             HStack(spacing: 4) {
-                                Text("接著:")
+                                Text("隨後")
                                     .font(.caption2.bold())
                                     .foregroundColor(.secondary)
                                 Image(systemName: nextStep.iconName)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                    .font(.caption)
+                                    .foregroundColor(.blue)
                                 Text(nextStep.instruction)
-                                    .font(.caption2)
+                                    .font(.caption)
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                             }
@@ -155,47 +160,26 @@ public struct LiveHUDDashboardView: View {
                         }
                     }
                 }
-            } else {
-                // Default Navigation Standby Banner
-                HStack(spacing: 12) {
-                    Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                        .font(.title2)
-                        .foregroundColor(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("即時運動路線記錄中")
-                            .font(.subheadline.bold())
-                        Text(track.points.isEmpty ? "若已在「地圖導航」規劃路線，此處將顯示即時轉彎指引" : "沿著規劃路線前進，轉彎處將自動更新提示")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }
+                .padding()
+                .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                .shadow(color: .black.opacity(0.15), radius: 6, y: 3)
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.blue.opacity(0.3), lineWidth: 1.5)
-        )
-        .shadow(color: .blue.opacity(0.12), radius: 6, y: 3)
     }
     
-    // MARK: - Live Navigation Mini-Map Card (簡易即時導航路線圖)
+    // MARK: - Mini Navigation Map Card
     private var liveNavigationMiniMapCard: some View {
         VStack(spacing: 8) {
             HStack {
-                HStack(spacing: 6) {
-                    Image(systemName: "map.fill")
-                        .foregroundColor(.blue)
-                    Text("簡易即時導航圖")
-                        .font(.headline.bold())
-                }
+                Image(systemName: "map.fill")
+                    .foregroundColor(.blue)
+                Text("動態路線預覽")
+                    .font(.subheadline.bold())
                 
                 Spacer()
                 
                 Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
+                    withAnimation {
                         isMapExpanded.toggle()
                     }
                 } label: {
@@ -212,7 +196,30 @@ public struct LiveHUDDashboardView: View {
             if isMapExpanded {
                 ZStack(alignment: .bottomTrailing) {
                     Map(position: $navMapPosition) {
-                        UserAnnotation()
+                        UserAnnotation {
+                            ZStack {
+                                if let heading = tracker.currentUserHeading {
+                                    Image(systemName: "location.north.fill")
+                                        .font(.system(size: 24))
+                                        .foregroundColor(.blue.opacity(0.35))
+                                        .rotationEffect(.degrees(heading))
+                                        .offset(y: -7)
+                                    
+                                    Image(systemName: "arrowtriangle.up.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.blue)
+                                        .rotationEffect(.degrees(heading))
+                                        .offset(y: -11)
+                                }
+                                Circle()
+                                    .fill(Color.white)
+                                    .frame(width: 18, height: 18)
+                                    .shadow(radius: 2)
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 13, height: 13)
+                            }
+                        }
                         
                         // Real Planned Route Polyline
                         if track.points.count > 1 {
@@ -220,10 +227,10 @@ public struct LiveHUDDashboardView: View {
                                 .stroke(Color.blue, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
                         }
                         
-                        // Live GPS Recorded Breadcrumb Trail
+                        // Live GPS Recorded Breadcrumb Trail (Orange High-Visibility)
                         if tracker.recordedPoints.count > 1 {
                             MapPolyline(coordinates: tracker.recordedPoints.map(\.coordinate))
-                                .stroke(Color.green, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+                                .stroke(Color.orange, style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
                         }
                         
                         // Start Point
@@ -298,16 +305,23 @@ public struct LiveHUDDashboardView: View {
                         }
                     }
                     
-                    if bleManager.connectedHeartRateDeviceName == nil && bleManager.connectedCadenceDeviceName == nil {
+                    if let powName = bleManager.connectedPowerDeviceName {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color.green).frame(width: 6, height: 6)
+                            Text(powName).font(.caption2.bold()).foregroundColor(.green)
+                        }
+                    }
+                    
+                    if bleManager.connectedHeartRateDeviceName == nil && bleManager.connectedCadenceDeviceName == nil && bleManager.connectedPowerDeviceName == nil {
                         Text("未連接 (點擊右側配對)")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
                 }
                 
-                Text(bleManager.connectedHeartRateDeviceName != nil || bleManager.connectedCadenceDeviceName != nil
-                     ? "即時數據源自真實 BLE 廣播協議 (0x180D/0x1816)"
-                     : "支援標準 BLE 心率帶、踏頻器與運動感測設備")
+                Text(bleManager.connectedHeartRateDeviceName != nil || bleManager.connectedCadenceDeviceName != nil || bleManager.connectedPowerDeviceName != nil
+                     ? "已連線設備具備自動重連記憶 · 廣播標準 GATT (0x180D/0x1816/0x1818)"
+                     : "支援心率帶、踏頻器、功率計等標準 BLE 單車感測器（自動記憶重連）")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
@@ -467,13 +481,14 @@ public struct LiveHUDDashboardView: View {
     }
     
     private func finishCurrentWorkout() {
-        // 1. 快照保存即將儲存的完整運動紀錄
+        // 1. 快照保存即將儲存的完整運動紀錄 (使用正值有效非零均值，解決平均踏頻為0與心率計算問題)
         snapshotDuration = tracker.elapsedSeconds
         snapshotMovingDuration = tracker.movingSeconds
         snapshotDistance = tracker.currentDistanceKm
         snapshotAscent = tracker.totalAscentMeters
-        snapshotHR = tracker.currentHeartRateBpm
-        snapshotCadence = tracker.currentCadenceRpm
+        snapshotHR = tracker.calculatedAvgHeartRate
+        snapshotCadence = tracker.calculatedAvgCadence
+        snapshotPower = tracker.calculatedAvgPower
         
         // 2. 結束運動並產出最終 GPX 軌跡
         let resultTrack = tracker.stopAndFinishWorkout()
@@ -482,7 +497,7 @@ public struct LiveHUDDashboardView: View {
         // 3. 運動結束後立即將即時速度、時間、里程等儀表板數據全部歸零
         tracker.resetAllMetrics()
         
-        // 4. 開啟儲存運動記錄畫面
+        // 4. 開啟儲存運動紀錄畫面
         showSaveWorkoutSheet = true
     }
     
@@ -534,7 +549,7 @@ public struct LiveHUDDashboardView: View {
             
             Divider()
             
-            // 4-Quadrant Metric Cards
+            // 6-Quadrant Multi-Metric Cards (HR, Cadence, Power, Distance, Elevation, Avg Speed)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 // Heart Rate
                 metricCard(
@@ -543,7 +558,7 @@ public struct LiveHUDDashboardView: View {
                     unit: "BPM",
                     icon: "heart.fill",
                     color: .red,
-                    extraNote: bleManager.connectedHeartRateDeviceName != nil ? "BLE 已連線" : "未連線"
+                    extraNote: bleManager.connectedHeartRateDeviceName != nil ? "BLE 已連線" : "未連接"
                 )
                 
                 // Cadence
@@ -553,12 +568,32 @@ public struct LiveHUDDashboardView: View {
                     unit: "RPM",
                     icon: "bicycle",
                     color: .purple,
-                    extraNote: bleManager.connectedCadenceDeviceName != nil ? "BLE 已連線" : "未連線"
+                    extraNote: bleManager.connectedCadenceDeviceName != nil ? "BLE 已連線" : "未連接"
+                )
+                
+                // Power
+                metricCard(
+                    title: "即時功率",
+                    value: tracker.currentPowerWatts != nil ? "\(tracker.currentPowerWatts!)" : "--",
+                    unit: "W",
+                    icon: "bolt.fill",
+                    color: .yellow,
+                    extraNote: bleManager.connectedPowerDeviceName != nil ? "BLE 功率計" : "未連接"
+                )
+                
+                // Moving Avg Speed
+                metricCard(
+                    title: "運動均速",
+                    value: String(format: "%.1f", tracker.avgMovingSpeedKmh),
+                    unit: "KM/H",
+                    icon: "gauge.with.needle",
+                    color: .green,
+                    extraNote: "有效踩踏"
                 )
                 
                 // Distance
                 metricCard(
-                    title: "累計里程",
+                    title: "累積里程",
                     value: String(format: "%.2f", tracker.currentDistanceKm),
                     unit: "KM",
                     icon: "road.lanes",
@@ -650,7 +685,7 @@ public struct LiveHUDDashboardView: View {
                             Image(systemName: "magnifyingglass")
                                 .font(.title)
                                 .foregroundColor(.secondary)
-                            Text("正在搜尋周圍的心率帶與踏頻器...\n請先轉動踏頻器或佩戴心率帶以喚醒藍牙廣播。")
+                            Text("正在搜尋周圍的心率帶、踏頻器與功率計...\n請先轉動踏頻器/功率計曲柄或佩戴心率帶以喚醒藍牙廣播。")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
@@ -696,11 +731,13 @@ public struct LiveHUDDashboardView: View {
                     }
                 }
                 
-                Section(header: Text("連線與協議說明")) {
+                Section(header: Text("連線與協定說明")) {
                     VStack(alignment: .leading, spacing: 6) {
+                        Text("• 具備「自動記憶重連」功能：配對過的裝備在下次開啟 App 時將自動連線，無須每次重新手動配對。")
                         Text("• 心率設備遵循藍牙標準 Heart Rate Profile (Service: 0x180D, Characteristic: 0x2A37)。")
                         Text("• 踏頻器遵循藍牙標準 Cycling Speed and Cadence (Service: 0x1816, Characteristic: 0x2A5B)。")
-                        Text("• App 直接在主機端解算曲柄迴轉數 (Crank Revolutions) 與事件時間差，保證踏頻即時準確。")
+                        Text("• 功率計遵循藍牙標準 Cycling Power Profile (Service: 0x1818, Characteristic: 0x2A63)。")
+                        Text("• 主機端毫秒級即時解析曲柄迴轉數與事件時間差，保證踏頻與功率反應迅速精準。")
                     }
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -777,7 +814,7 @@ public struct LiveHUDDashboardView: View {
                 Text("沿途路段路過時間與降雨預報")
                     .font(.headline.bold())
                 Spacer()
-                Text("AI 地形微氣候")
+                Text("動態時段預報")
                     .font(.caption2.bold())
                     .padding(4)
                     .background(Color.orange.opacity(0.15), in: Capsule())
@@ -843,7 +880,7 @@ public struct LiveHUDDashboardView: View {
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     } else {
-                        Text("⏰ 預計 \(formattedDate(wf.projectedTime)) 通過")
+                        Text("⏱ 預計 \(formattedDate(wf.projectedTime)) 通過")
                             .font(.caption2.bold())
                             .foregroundColor(.purple)
                         Text("· 剩餘 \(String(format: "%.1f", max(0, wf.distanceKm - tracker.currentDistanceKm))) km")
@@ -900,17 +937,23 @@ public struct LiveHUDDashboardView: View {
     }
     
     private func updateAIPredictionAndWeather() {
+        let userCoord = tracker.currentUserLocation?.coordinate
+        let speed = tracker.avgMovingSpeedKmh > 3.0 ? tracker.avgMovingSpeedKmh : (tracker.currentSpeedKmh > 3.0 ? tracker.currentSpeedKmh : 20.0)
+        
         let ratio = track.totalDistanceKm > 0 ? min(1.0, tracker.currentDistanceKm / track.totalDistanceKm) : 0.0
-        let speed = tracker.currentSpeedKmh > 0 ? tracker.currentSpeedKmh : 22.0
         aiPrediction = AIEstimationEngine.shared.predictETA(
             track: track,
+            currentUserLocation: userCoord,
             currentProgressRatio: ratio,
+            trackerDistanceKm: tracker.currentDistanceKm,
+            rollingAvgSpeedKmh: tracker.avgMovingSpeedKmh,
             userBaseSpeedKmh: speed
         )
         weatherForecasts = RouteWeatherService.shared.getRouteForecast(
             track: track,
+            currentUserCoord: userCoord,
             currentDistanceKm: tracker.currentDistanceKm,
-            currentMovingSpeedKmh: tracker.currentSpeedKmh
+            currentMovingSpeedKmh: speed
         )
     }
     
@@ -918,8 +961,14 @@ public struct LiveHUDDashboardView: View {
         if meters >= 1000 {
             return String(format: "%.1f 公里", meters / 1000.0)
         } else {
-            return "\(max(0, Int(meters))) 公尺"
+            return "\(Int(meters)) 公尺"
         }
+    }
+    
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
     
     private func formattedTime(_ seconds: TimeInterval) -> String {
@@ -932,11 +981,5 @@ public struct LiveHUDDashboardView: View {
         } else {
             return String(format: "%02d:%02d", mins, secs)
         }
-    }
-    
-    private func formattedDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
     }
 }

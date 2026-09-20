@@ -113,6 +113,8 @@ public struct RoutePlannerView: View {
     @State private var mapPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @State private var alertMessage: String?
     @State private var showAlert: Bool = false
+    @State private var supplyPointToPrompt: SupplyPoint? = nil
+    @State private var showSupplyConfirmationDialog: Bool = false
     
     public init(currentTrack: Binding<GPXTrack>) {
         self._currentTrack = currentTrack
@@ -122,7 +124,36 @@ public struct RoutePlannerView: View {
         ZStack(alignment: .top) {
             // Native Apple Map with Exact Road Polyline (Zero-Drift)
             Map(position: $mapPosition) {
-                UserAnnotation()
+                UserAnnotation {
+                    ZStack {
+                        if let heading = tracker.currentUserHeading {
+                            Image(systemName: "location.north.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(.blue.opacity(0.35))
+                                .rotationEffect(.degrees(heading))
+                                .offset(y: -9)
+                            
+                            Image(systemName: "arrowtriangle.up.fill")
+                                .font(.system(size: 13))
+                                .foregroundColor(.blue)
+                                .rotationEffect(.degrees(heading))
+                                .offset(y: -14)
+                        }
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 22, height: 22)
+                            .shadow(color: .black.opacity(0.25), radius: 3)
+                        Circle()
+                            .fill(Color.blue)
+                            .frame(width: 16, height: 16)
+                    }
+                }
+                
+                // Real Workout GPS Breadcrumb Trail (運動記錄中真實軌跡，永不被重新規劃路線沖掉)
+                if tracker.recordedPoints.count > 1 {
+                    MapPolyline(coordinates: tracker.recordedPoints.map(\.coordinate))
+                        .stroke(Color.orange, style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                }
                 
                 // Real 100% Geometry Road Polyline
                 if currentTrack.points.count > 1 {
@@ -158,19 +189,85 @@ public struct RoutePlannerView: View {
                     }
                 }
                 
-                // Supply Points - 地圖上使用原生高效 Marker 標註（0 GPU/CPU 耗損，極致流暢）
+                // Supply Points - 支援點擊互動詢問是否加為路線停靠點
                 ForEach(nearest5SupplyPoints) { sp in
-                    Marker(sp.name, systemImage: sp.category.icon, coordinate: sp.coordinate)
-                        .tint(sp.category.color)
+                    Annotation(sp.name, coordinate: sp.coordinate) {
+                        Button {
+                            promptAddSupplyPoint(sp)
+                        } label: {
+                            VStack(spacing: 2) {
+                                Image(systemName: sp.category.icon)
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(6)
+                                    .background(sp.category.color)
+                                    .clipShape(Circle())
+                                    .shadow(radius: 2)
+                                Text(sp.name)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 2)
+                                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             .mapStyle(.standard)
             .edgesIgnoringSafeArea(.all)
             
-            // Minimal Floating Top Route Summary Bar (空間大幅釋放，僅保留起點與終點)
-            compactRouteSummaryBar
-                .padding(.horizontal)
-                .padding(.top, 8)
+            // Minimal Floating Top Route Summary Bar & Off-Route Warning & Recording HUD
+            VStack(spacing: 6) {
+                compactRouteSummaryBar
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                
+                if tracker.isOffRoute {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.yellow)
+                        Text("偏離規劃路線 \(Int(tracker.offRouteDistanceMeters)) 公尺")
+                            .font(.caption.bold())
+                            .foregroundColor(.white)
+                        Spacer()
+                        Button {
+                            recalculateRouteFromCurrentLocation()
+                        } label: {
+                            Text("重新規劃")
+                                .font(.caption2.bold())
+                                .foregroundColor(.black)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.yellow, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                }
+                
+                if tracker.state == .recording || tracker.state == .paused {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(tracker.state == .recording ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                        Text("運動記錄中 · \(formattedTime(tracker.movingSeconds)) · \(String(format: "%.1f", tracker.currentDistanceKm)) km")
+                            .font(.caption2.bold())
+                            .foregroundColor(.white)
+                        if tracker.isAutoPaused {
+                            Text("⏸ 自動暫停")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.75), in: Capsule())
+                }
+            }
             
             // Uniform 5 Bottom Action Buttons Dock (固定於底部：現在位置、匯入GPX、路線指引、爬升、補給站)
             VStack {
@@ -189,6 +286,23 @@ public struct RoutePlannerView: View {
         }
         .sheet(isPresented: $showSupplySheet) {
             supplyPointsSheet
+        }
+        .alert("加入路線停靠點？", isPresented: $showSupplyConfirmationDialog) {
+            Button("加入為途經點 (智慧順序)") {
+                confirmAddSupplyPoint()
+            }
+            Button("僅在地圖查看") {
+                if let sp = supplyPointToPrompt {
+                    focusMapOnSupplyPoint(sp)
+                }
+            }
+            Button("取消", role: .cancel) {
+                supplyPointToPrompt = nil
+            }
+        } message: {
+            if let sp = supplyPointToPrompt {
+                Text("是否將「\(sp.name)」加入路線？系統將自動分析並排列至最順暢的中途順序。")
+            }
         }
         #if os(iOS)
         .sheet(isPresented: $showExportShareSheet) {
@@ -236,6 +350,9 @@ public struct RoutePlannerView: View {
             }
         }
         .onAppear {
+            tracker.onAutoRerouteRequested = {
+                self.recalculateRouteFromCurrentLocation()
+            }
             if currentTrack.points.count > 1 {
                 fitMapToCurrentTrack()
                 if supplyPoints.isEmpty {
@@ -720,9 +837,76 @@ public struct RoutePlannerView: View {
         calculateRealRoute()
     }
     
+    private func ensureRouteStopsPopulated() {
+        if routeStops.count < 2 {
+            let orig = currentTrack.waypoints.first?.name ?? "目前位置"
+            let dest = currentTrack.waypoints.last?.name ?? (currentTrack.title.isEmpty ? "" : currentTrack.title)
+            routeStops = [NavigationWaypoint(name: orig), NavigationWaypoint(name: dest)]
+        } else if routeStops.last?.name.trimmingCharacters(in: .whitespaces).isEmpty == true && !currentTrack.title.isEmpty && currentTrack.title != "請輸入目的地開始導航" {
+            routeStops[routeStops.count - 1].name = currentTrack.title
+        }
+    }
+    
     private func addNewStop() {
+        ensureRouteStopsPopulated()
         let insertIndex = max(1, routeStops.count - 1)
         routeStops.insert(NavigationWaypoint(name: ""), at: insertIndex)
+    }
+    
+    private func promptAddSupplyPoint(_ sp: SupplyPoint) {
+        self.supplyPointToPrompt = sp
+        self.showSupplyConfirmationDialog = true
+    }
+    
+    private func confirmAddSupplyPoint() {
+        guard let sp = supplyPointToPrompt else { return }
+        ensureRouteStopsPopulated()
+        let idx = findOptimalInsertionIndex(for: sp.coordinate)
+        routeStops.insert(NavigationWaypoint(name: sp.name), at: idx)
+        supplyPointToPrompt = nil
+        showSupplyConfirmationDialog = false
+        showSupplySheet = false
+        calculateRealRoute()
+    }
+    
+    private func findOptimalInsertionIndex(for coord: CLLocationCoordinate2D) -> Int {
+        guard routeStops.count >= 2, currentTrack.points.count > 1 else {
+            return max(1, routeStops.count - 1)
+        }
+        if routeStops.count == 2 { return 1 }
+        
+        let targetLoc = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        var minTrackDist = Double.infinity
+        var closestTrackIdx = 0
+        for (i, pt) in currentTrack.points.enumerated() {
+            let d = targetLoc.distance(from: CLLocation(latitude: pt.latitude, longitude: pt.longitude))
+            if d < minTrackDist {
+                minTrackDist = d
+                closestTrackIdx = i
+            }
+        }
+        let progressAlongRoute = Double(closestTrackIdx) / Double(max(1, currentTrack.points.count - 1))
+        let numIntervals = routeStops.count - 1
+        let targetInterval = Int(round(progressAlongRoute * Double(numIntervals)))
+        return max(1, min(routeStops.count - 1, max(1, targetInterval)))
+    }
+    
+    private func recalculateRouteFromCurrentLocation() {
+        guard !routeStops.isEmpty else { return }
+        routeStops[0].name = "目前位置"
+        calculateRealRoute()
+    }
+    
+    private func formattedTime(_ seconds: TimeInterval) -> String {
+        let total = Int(seconds)
+        let hrs = total / 3600
+        let mins = (total % 3600) / 60
+        let secs = total % 60
+        if hrs > 0 {
+            return String(format: "%d:%02d:%02d", hrs, mins, secs)
+        } else {
+            return String(format: "%02d:%02d", mins, secs)
+        }
     }
     
     private func removeStop(id: UUID) {
@@ -1253,7 +1437,7 @@ public struct RoutePlannerView: View {
                 .buttonStyle(.plain)
                 
                 Button {
-                    addSupplyAsWaypoint(sp)
+                    promptAddSupplyPoint(sp)
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .font(.system(size: 20))
