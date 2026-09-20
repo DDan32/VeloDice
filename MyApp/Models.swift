@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import CoreLocation
 import SwiftUI
@@ -872,6 +873,169 @@ public class GPXParser: NSObject, XMLParserDelegate {
                     currentPower = Int(d)
                 }
             }
+        }
+    }
+}
+
+
+// MARK: - Distance Hall of Fame Best Effort
+public struct BestEffortRecord: Identifiable, Codable, Equatable {
+    public var id: UUID
+    public var targetDistanceKm: Double
+    public var bestTimeSeconds: TimeInterval
+    public var avgSpeedKmh: Double
+    public var activityTitle: String
+    public var activityDate: Date
+    public var activityId: UUID
+    
+    public init(
+        id: UUID = UUID(),
+        targetDistanceKm: Double,
+        bestTimeSeconds: TimeInterval,
+        avgSpeedKmh: Double,
+        activityTitle: String,
+        activityDate: Date = Date(),
+        activityId: UUID
+    ) {
+        self.id = id
+        self.targetDistanceKm = targetDistanceKm
+        self.bestTimeSeconds = bestTimeSeconds
+        self.avgSpeedKmh = avgSpeedKmh
+        self.activityTitle = activityTitle
+        self.activityDate = activityDate
+        self.activityId = activityId
+    }
+    
+    public var formattedTargetName: String {
+        return "\(Int(targetDistanceKm)) 公里最快"
+    }
+}
+
+// MARK: - User Profile & Avatar Store
+public struct UserProfile: Codable, Equatable {
+    public var nickname: String
+    public var bio: String
+    public var avatarData: Data?
+    public var favoriteBike: String
+    
+    public init(
+        nickname: String = "破風騎士",
+        bio: String = "享受每一次踩踏與爬坡帶來的自由與成就！",
+        avatarData: Data? = nil,
+        favoriteBike: String = "公路車"
+    ) {
+        self.nickname = nickname
+        self.bio = bio
+        self.avatarData = avatarData
+        self.favoriteBike = favoriteBike
+    }
+}
+
+public class UserProfileStore: ObservableObject {
+    public static let shared = UserProfileStore()
+    
+    @Published public var profile: UserProfile {
+        didSet {
+            save()
+        }
+    }
+    
+    private let storageKey = "velodice_user_profile_data_v1"
+    
+    public init() {
+        if let data = UserDefaults.standard.data(forKey: storageKey),
+           let decoded = try? JSONDecoder().decode(UserProfile.self, from: data) {
+            self.profile = decoded
+        } else {
+            self.profile = UserProfile()
+        }
+    }
+    
+    public func update(nickname: String, bio: String, avatarData: Data?, favoriteBike: String) {
+        self.profile = UserProfile(
+            nickname: nickname.trimmingCharacters(in: .whitespaces).isEmpty ? "破風騎士" : nickname,
+            bio: bio,
+            avatarData: avatarData,
+            favoriteBike: favoriteBike
+        )
+    }
+    
+    private func save() {
+        if let encoded = try? JSONEncoder().encode(profile) {
+            UserDefaults.standard.set(encoded, forKey: storageKey)
+        }
+    }
+}
+
+
+// MARK: - Modern Google Maps-style Heading Cone Beam
+public struct HeadingConeShape: Shape {
+    public init() {}
+    public func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let radius = min(rect.width, rect.height) / 2.0
+        let startAngle = Angle.degrees(-120)
+        let endAngle = Angle.degrees(-60)
+        
+        path.move(to: center)
+        path.addArc(center: center, radius: radius, startAngle: startAngle, endAngle: endAngle, clockwise: false)
+        path.closeSubpath()
+        return path
+    }
+}
+
+public struct HeadingConeBeamView: View {
+    public let heading: Double?
+    
+    public init(heading: Double?) {
+        self.heading = heading
+    }
+    
+    public var body: some View {
+        ZStack {
+            if let h = heading {
+                // Wide radiant beam projecting forward
+                HeadingConeShape()
+                    .fill(
+                        RadialGradient(
+                            gradient: Gradient(colors: [
+                                Color.cyan.opacity(0.8),
+                                Color.blue.opacity(0.45),
+                                Color.blue.opacity(0.0)
+                            ]),
+                            center: .center,
+                            startRadius: 10,
+                            endRadius: 55
+                        )
+                    )
+                    .frame(width: 110, height: 110)
+                    .rotationEffect(.degrees(h))
+                
+                // Subtle forward guide arrow
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundColor(.white)
+                    .shadow(color: .blue, radius: 2)
+                    .offset(y: -24)
+                    .rotationEffect(.degrees(h))
+            }
+            
+            // Radar pulse ring
+            Circle()
+                .fill(Color.blue.opacity(0.18))
+                .frame(width: 32, height: 32)
+            
+            // White high-contrast bezel
+            Circle()
+                .fill(Color.white)
+                .frame(width: 18, height: 18)
+                .shadow(color: .black.opacity(0.25), radius: 3, x: 0, y: 1)
+            
+            // Center GPS blue dot
+            Circle()
+                .fill(Color.blue)
+                .frame(width: 12, height: 12)
         }
     }
 }

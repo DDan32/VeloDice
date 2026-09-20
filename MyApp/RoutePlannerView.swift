@@ -125,28 +125,7 @@ public struct RoutePlannerView: View {
             // Native Apple Map with Exact Road Polyline (Zero-Drift)
             Map(position: $mapPosition) {
                 UserAnnotation {
-                    ZStack {
-                        if let heading = tracker.currentUserHeading {
-                            Image(systemName: "location.north.fill")
-                                .font(.system(size: 32))
-                                .foregroundColor(.blue.opacity(0.35))
-                                .rotationEffect(.degrees(heading))
-                                .offset(y: -9)
-                            
-                            Image(systemName: "arrowtriangle.up.fill")
-                                .font(.system(size: 13))
-                                .foregroundColor(.blue)
-                                .rotationEffect(.degrees(heading))
-                                .offset(y: -14)
-                        }
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: 22, height: 22)
-                            .shadow(color: .black.opacity(0.25), radius: 3)
-                        Circle()
-                            .fill(Color.blue)
-                            .frame(width: 16, height: 16)
-                    }
+                    HeadingConeBeamView(heading: tracker.currentUserHeading)
                 }
                 
                 // Real Workout GPS Breadcrumb Trail (運動記錄中真實軌跡，永不被重新規劃路線沖掉)

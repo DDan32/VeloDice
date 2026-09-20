@@ -619,32 +619,35 @@ public struct TransparentShareCardView: View {
             .background(Color.clear)
         
         let renderer = ImageRenderer(content: stickerContent)
-        renderer.scale = 3.0
-        renderer.isOpaque = false // 確保完全去背透明
+        renderer.scale = 2.0
+        renderer.isOpaque = (selectedTheme == .mapBackground)
         
         guard let uiImg = renderer.uiImage, let pngData = uiImg.pngData() else {
             alertTitle = "產生失敗"
-            alertMessage = "無法產生透明分享貼圖，請重試。"
+            alertMessage = "無法產生分享貼圖，請重試。"
             showAlert = true
             return
         }
         
         let storyURL = URL(string: "instagram-stories://share?source_application=com.velodice.ride")!
         if UIApplication.shared.canOpenURL(storyURL) {
-            // 僅傳送 stickerImage，背景留空，讓 Instagram 自動開啟相機並置入透明去背貼圖！
-            let pasteboardItems: [[String: Any]] = [
-                [
-                    "com.instagram.sharedSticker.stickerImage": pngData
-                ]
-            ]
+            var pasteboardDict: [String: Any] = [:]
+            if selectedTheme == .mapBackground {
+                pasteboardDict["com.instagram.sharedSticker.backgroundImage"] = pngData
+            } else {
+                pasteboardDict["com.instagram.sharedSticker.stickerImage"] = pngData
+                pasteboardDict["com.instagram.sharedSticker.backgroundTopColor"] = "#14161B"
+                pasteboardDict["com.instagram.sharedSticker.backgroundBottomColor"] = "#090A0C"
+            }
+            
             let pasteboardOptions: [UIPasteboard.OptionsKey: Any] = [
                 .expirationDate: Date().addingTimeInterval(300)
             ]
-            UIPasteboard.general.setItems(pasteboardItems, options: pasteboardOptions)
+            UIPasteboard.general.setItems([pasteboardDict], options: pasteboardOptions)
             UIApplication.shared.open(storyURL)
         } else {
             alertTitle = "尚未安裝 Instagram"
-            alertMessage = "裝置尚未安裝 Instagram App，已將透明分享卡片儲存，您也可以透過「系統分享」傳送給好友。"
+            alertMessage = "裝置尚未安裝 Instagram App，已為您開啟系統分享選單，可直接儲存至相簿或傳送給好友。"
             showAlert = true
             triggerSystemShare()
         }

@@ -538,6 +538,10 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
         locationManager?.pausesLocationUpdatesAutomatically = false
         locationManager?.activityType = .fitness
         #endif
+        locationManager?.headingFilter = 1.0
+        #if os(iOS)
+        locationManager?.headingOrientation = .portrait
+        #endif
         locationManager?.requestWhenInUseAuthorization()
         locationManager?.startUpdatingLocation()
         locationManager?.startUpdatingHeading()
@@ -843,6 +847,11 @@ public class WorkoutTracker: NSObject, ObservableObject, CLLocationManagerDelega
                     self.isAutoPaused = false
                 }
                 self.currentSpeedKmh = effectiveSpeed
+                
+                // 動態融合 GPS 航向角 (Course)：當移動時以衛星航向為主，精準抗電磁干擾
+                if newLoc.course >= 0 && (effectiveSpeed >= 2.0 || newLoc.speed >= 0.6) {
+                    self.currentUserHeading = newLoc.course
+                }
                 
                 // 真實位移門檻放寬至 1.2 公尺，確保急轉彎與原路折返流暢記錄
                 if distMeters >= 1.2 {

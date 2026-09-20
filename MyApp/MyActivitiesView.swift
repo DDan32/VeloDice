@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import MapKit
 import UniformTypeIdentifiers
@@ -14,6 +15,9 @@ public struct MyActivitiesView: View {
     @State private var selectedActivityForShare: SavedActivity? = nil
     @State private var selectedDetailActivity: SavedActivity? = nil
     @State private var showAddSegmentSheet: Bool = false
+    @State private var selectedSegmentForDetail: SegmentRecord? = nil
+    @State private var showProfileSheet: Bool = false
+    @ObservedObject private var profileStore = UserProfileStore.shared
     
     // Year-based Pagination
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
@@ -67,7 +71,8 @@ public struct MyActivitiesView: View {
         NavigationStack {
             ZStack(alignment: .bottom) {
                 VStack(spacing: 0) {
-                    // Top Segmented Bar (活動 / 生涯紀錄 / 路段最佳)
+                    athleteProfileBanner
+                    
                     Picker("", selection: $selectedTab) {
                         Text("過往活動").tag(0)
                         Text("生涯榮譽榜").tag(1)
@@ -88,90 +93,7 @@ public struct MyActivitiesView: View {
                     }
                 }
                 
-                // Bottom Undo Toast for Deleted Segment
-                if showUndoToast {
-                    HStack(spacing: 12) {
-                        Image(systemName: "trash.fill")
-                            .foregroundColor(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("已移至最近刪除「\(deletedSegmentName)」")
-                                .font(.subheadline.bold())
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                            Text("系統將為您保留 90 天（3 個月）")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Button {
-                            if let _ = store.undoLastDeletedSegment() {
-                                withAnimation {
-                                    showUndoToast = false
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.uturn.backward")
-                                Text("復原")
-                            }
-                            .font(.caption.bold())
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Color.blue, in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
-                    .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-                
-                // Bottom Undo Toast for Deleted Activity
-                if showActivityDeletedToast {
-                    HStack(spacing: 12) {
-                        Image(systemName: "trash.fill")
-                            .foregroundColor(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("已刪除「\(lastDeletedActivityTitle)」")
-                                .font(.subheadline.bold())
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                            Text("已移入最近刪除，保留 90 天（3 個月）")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Button {
-                            if let id = lastDeletedActivityId {
-                                store.restoreActivity(id: id)
-                                withAnimation {
-                                    showActivityDeletedToast = false
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "arrow.uturn.backward")
-                                Text("復原")
-                            }
-                            .font(.caption.bold())
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Color.green, in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
-                    .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
+                undoToastsOverlay
             }
             .navigationTitle("我的運動歷程")
             .toolbar {
@@ -272,6 +194,12 @@ public struct MyActivitiesView: View {
             } message: {
                 Text("路段「\(segmentToDelete?.name ?? "")」將移至『最近刪除』。系統將為您保留 90 天（3 個月），期間可隨時恢復；90 天後系統將自動永久刪除。")
             }
+            .sheet(isPresented: $showProfileSheet) {
+                UserProfileEditSheet()
+            }
+            .sheet(item: $selectedSegmentForDetail) { seg in
+                SegmentDetailSheet(segment: seg, onLoadRoute: onLoadRouteToNavigation)
+            }
             .sheet(item: $selectedDetailActivity) { act in
                 activityDetailSheet(act)
             }
@@ -295,7 +223,158 @@ public struct MyActivitiesView: View {
         }
     }
     
-    // MARK: - Tab 0: Activities List View (1頁是1年，月份近的在上面，最近的在上面)
+    private var athleteProfileBanner: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(LinearGradient(colors: [.orange, .yellow], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 44, height: 44)
+                    .shadow(color: .orange.opacity(0.4), radius: 4)
+                
+                if let data = profileStore.profile.avatarData, let uiImg = UIImage(data: data) {
+                    Image(uiImage: uiImg)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 38, height: 38)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    ZStack {
+                        Color.black.opacity(0.85)
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.white)
+                    }
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(profileStore.profile.nickname)
+                        .font(.headline.bold())
+                        .foregroundColor(.primary)
+                    
+                    Text(profileStore.profile.favoriteBike)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12), in: Capsule())
+                }
+                
+                Text(profileStore.profile.bio.isEmpty ? "享受每一次騎乘與爬坡！" : profileStore.profile.bio)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            
+            Spacer()
+            
+            Button {
+                showProfileSheet = true
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "pencil")
+                    Text("編輯")
+                }
+                .font(.caption.bold())
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private var undoToastsOverlay: some View {
+        if showUndoToast {
+            HStack(spacing: 12) {
+                Image(systemName: "trash.fill")
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("已移至最近刪除「\(deletedSegmentName)」")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Text("系統將為您保留 90 天（3 個月）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button {
+                    if let _ = store.undoLastDeletedSegment() {
+                        withAnimation {
+                            showUndoToast = false
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.uturn.backward")
+                        Text("復原")
+                    }
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.orange, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+        
+        if showActivityDeletedToast {
+            HStack(spacing: 12) {
+                Image(systemName: "trash.fill")
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("已刪除「\(lastDeletedActivityTitle)」")
+                        .font(.subheadline.bold())
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Text("已移入最近刪除，保留 90 天（3 個月）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button {
+                    if let id = lastDeletedActivityId {
+                        store.restoreActivity(id: id)
+                        withAnimation {
+                            showActivityDeletedToast = false
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.uturn.backward")
+                        Text("復原")
+                    }
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.green, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+        // MARK: - Tab 0: Activities List View (1頁是1年，月份近的在上面，最近的在上面)
     private var activitiesListView: some View {
         Group {
             if store.activeActivities.isEmpty {
@@ -515,6 +594,31 @@ public struct MyActivitiesView: View {
                 }
                 .padding()
                 .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
+                
+                // All-Time Distance PRs (1, 5, 10, 50, 100, 300 公里最快)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: "flag.checkered.circle.fill")
+                            .foregroundColor(.yellow)
+                            .font(.title3)
+                        Text("里程極速榮譽榜 (Distance Bests)")
+                            .font(.headline.bold())
+                        Spacer()
+                        Text("歷史活動自動比對")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    let targetDists: [Double] = [1.0, 5.0, 10.0, 50.0, 100.0, 300.0]
+                    VStack(spacing: 8) {
+                        ForEach(targetDists, id: \.self) { targetKm in
+                            let record = store.bestEfforts.first(where: { abs($0.targetDistanceKm - targetKm) < 0.1 })
+                            distanceBestRow(targetKm: targetKm, record: record)
+                        }
+                    }
+                }
+                .padding()
+                .background(RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial))
             }
             .padding(16)
         }
@@ -541,6 +645,54 @@ public struct MyActivitiesView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.06)))
     }
     
+
+    private func distanceBestRow(targetKm: Double, record: BestEffortRecord?) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(record != nil ? Color.orange.opacity(0.18) : Color.secondary.opacity(0.1))
+                    .frame(width: 40, height: 40)
+                Image(systemName: record != nil ? "trophy.fill" : "flag.slash")
+                    .font(.subheadline.bold())
+                    .foregroundColor(record != nil ? .orange : .secondary)
+            }
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(targetKm < 1.0 ? "\(Int(targetKm * 1000)) 公尺最快" : "\(Int(targetKm)) 公里最快")
+                    .font(.subheadline.bold())
+                if let rec = record {
+                    Text("\(rec.activityTitle) · \(rec.activityDate.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("尚未達成（單次騎行達 \(Int(targetKm))km 自動比對）")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            Spacer()
+            
+            if let rec = record {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(formattedDuration(rec.bestTimeSeconds))
+                        .font(.subheadline.bold())
+                        .foregroundColor(.purple)
+                    Text(String(format: "%.1f km/h", rec.avgSpeedKmh))
+                        .font(.caption2.bold())
+                        .foregroundColor(.secondary)
+                }
+            } else {
+                Text("--:--")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.06)))
+    }
+
     private func recordRowItem(title: String, value: String, icon: String, color: Color) -> some View {
         HStack {
             Image(systemName: icon)
@@ -1715,4 +1867,349 @@ public struct ActivityChartSample: Identifiable {
     public let cadence: Double?
     public let heartRate: Double?
     public let power: Double?
+}
+
+
+// MARK: - Segment Detail Interactive Map & Attempts Sheet
+public struct SegmentDetailSheet: View {
+    let segment: SegmentRecord
+    var onLoadRoute: ((GPXTrack) -> Void)?
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store = ActivityStore.shared
+    
+    @State private var mapPosition: MapCameraPosition = .automatic
+    
+    private var attempts: [(date: Date, duration: TimeInterval, speed: Double, activityTitle: String, isPR: Bool)] {
+        var list: [(date: Date, duration: TimeInterval, speed: Double, activityTitle: String, isPR: Bool)] = []
+        for act in store.activeActivities {
+            for effort in act.segmentEfforts where effort.segmentId == segment.id {
+                let spd = effort.avgSpeedKmh > 0 ? effort.avgSpeedKmh : (segment.distanceKm / (effort.timeSeconds / 3600.0))
+                list.append((date: act.date, duration: effort.timeSeconds, speed: spd, activityTitle: act.title, isPR: effort.isPR))
+            }
+        }
+        return list.sorted(by: { $0.date > $1.date })
+    }
+    
+    public var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    // Segment Interactive Map
+                    ZStack(alignment: .bottomTrailing) {
+                        Map(position: $mapPosition) {
+                            MapPolyline(coordinates: [
+                                segment.startCoordinate.coordinate,
+                                segment.endCoordinate.coordinate
+                            ])
+                            .stroke(
+                                LinearGradient(colors: [.orange, .yellow], startPoint: .leading, endPoint: .trailing),
+                                style: StrokeStyle(lineWidth: 5, lineCap: .round)
+                            )
+                            
+                            Annotation("起點", coordinate: segment.startCoordinate.coordinate) {
+                                VStack(spacing: 2) {
+                                    Image(systemName: "flag.fill")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .padding(6)
+                                        .background(Circle().fill(Color.green))
+                                        .shadow(radius: 2)
+                                    Text("起點")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 4)
+                                        .background(Color.black.opacity(0.7), in: Capsule())
+                                }
+                            }
+                            
+                            Annotation("終點", coordinate: segment.endCoordinate.coordinate) {
+                                VStack(spacing: 2) {
+                                    Image(systemName: "flag.checkered")
+                                        .font(.caption.bold())
+                                        .foregroundColor(.white)
+                                        .padding(6)
+                                        .background(Circle().fill(Color.orange))
+                                        .shadow(radius: 2)
+                                    Text("終點")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 4)
+                                        .background(Color.black.opacity(0.7), in: Capsule())
+                                }
+                            }
+                        }
+                        .frame(height: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .shadow(radius: 4)
+                    }
+                    .padding(.horizontal, 16)
+                    
+                    // Segment Stats Grid
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                        segmentStatPill(title: "長度", value: String(format: "%.1f km", segment.distanceKm), icon: "road.lanes", color: .blue)
+                        segmentStatPill(title: "總爬升", value: "\(Int(segment.elevationGainMeters)) m", icon: "mountain.2.fill", color: .teal)
+                        segmentStatPill(title: "平均坡度", value: String(format: "%.1f%%", segment.avgGradientPercent), icon: "triangle.fill", color: .orange)
+                    }
+                    .padding(.horizontal, 16)
+                    
+                    // PR Banner
+                    if let pr = segment.personalRecordSeconds {
+                        let prSpeed = segment.distanceKm / (pr / 3600.0)
+                        HStack(spacing: 14) {
+                            Image(systemName: "trophy.fill")
+                                .font(.system(size: 32))
+                                .foregroundColor(.yellow)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("個人最佳成績 (PR)")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.orange)
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(formattedDuration(pr))
+                                        .font(.title2.bold())
+                                    Text(String(format: "均速 %.1f km/h", prSpeed))
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(14)
+                        .background(Color.yellow.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 16)
+                    }
+                    
+                    // Action: Load to Navigation
+                    if let load = onLoadRoute {
+                        Button {
+                            let track = GPXTrack(
+                                title: "\(segment.name) 挑戰",
+                                points: [segment.startCoordinate, segment.endCoordinate],
+                                waypoints: [
+                                    GPXWaypoint(name: "\(segment.name) 起點", latitude: segment.startCoordinate.latitude, longitude: segment.startCoordinate.longitude, elevation: segment.startCoordinate.elevation, iconName: "flag.fill"),
+                                    GPXWaypoint(name: "\(segment.name) 終點", latitude: segment.endCoordinate.latitude, longitude: segment.endCoordinate.longitude, elevation: segment.endCoordinate.elevation, iconName: "flag.checkered")
+                                ]
+                            )
+                            load(track)
+                            dismiss()
+                        } label: {
+                            HStack {
+                                Image(systemName: "map.fill")
+                                Text("載入此路段至地圖導航")
+                            }
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(
+                                LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing),
+                                in: RoundedRectangle(cornerRadius: 12)
+                            )
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                    
+                    // Past Attempts List
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("歷次挑戰紀錄 (\(attempts.count) 次)")
+                            .font(.headline)
+                            .padding(.horizontal, 16)
+                        
+                        if attempts.isEmpty {
+                            Text("尚無挑戰紀錄，騎行經過此路段將自動記錄並結算成績。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 16)
+                        } else {
+                            VStack(spacing: 8) {
+                                ForEach(attempts.indices, id: \.self) { idx in
+                                    let att = attempts[idx]
+                                    HStack {
+                                        if att.isPR {
+                                            Image(systemName: "medal.fill")
+                                                .foregroundColor(.yellow)
+                                        } else {
+                                            Text("#\(attempts.count - idx)")
+                                                .font(.caption.bold())
+                                                .foregroundColor(.secondary)
+                                                .frame(width: 24)
+                                        }
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(att.activityTitle)
+                                                .font(.subheadline.bold())
+                                            Text(att.date.formatted(date: .abbreviated, time: .shortened))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Spacer()
+                                        VStack(alignment: .trailing, spacing: 2) {
+                                            Text(formattedDuration(att.duration))
+                                                .font(.subheadline.bold())
+                                            Text(String(format: "%.1f km/h", att.speed))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    .padding(10)
+                                    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        }
+                    }
+                }
+                .padding(.vertical, 16)
+            }
+            .navigationTitle(segment.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("關閉") { dismiss() }
+                }
+            }
+            .onAppear {
+                let minLat = min(segment.startCoordinate.latitude, segment.endCoordinate.latitude)
+                let maxLat = max(segment.startCoordinate.latitude, segment.endCoordinate.latitude)
+                let minLon = min(segment.startCoordinate.longitude, segment.endCoordinate.longitude)
+                let maxLon = max(segment.startCoordinate.longitude, segment.endCoordinate.longitude)
+                let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2.0, longitude: (minLon + maxLon) / 2.0)
+                let span = MKCoordinateSpan(latitudeDelta: max(0.015, (maxLat - minLat) * 1.8), longitudeDelta: max(0.015, (maxLon - minLon) * 1.8))
+                mapPosition = .region(MKCoordinateRegion(center: center, span: span))
+            }
+        }
+    }
+    
+    private func segmentStatPill(title: String, value: String, icon: String, color: Color) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon)
+                .foregroundColor(color)
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.subheadline.bold())
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+    }
+    
+    private func formattedDuration(_ sec: TimeInterval) -> String {
+        let total = Int(sec)
+        let m = (total % 3600) / 60
+        let s = total % 60
+        let h = total / 3600
+        if h > 0 {
+            return String(format: "%d小時%02d分%02d秒", h, m, s)
+        } else {
+            return String(format: "%d分%02d秒", m, s)
+        }
+    }
+}
+
+// MARK: - User Profile Edit Sheet (Square Avatar, Nickname, Bio, Bike)
+public struct UserProfileEditSheet: View {
+    @ObservedObject private var profileStore = UserProfileStore.shared
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var nickname: String = ""
+    @State private var bio: String = ""
+    @State private var favoriteBike: String = ""
+    @State private var avatarData: Data? = nil
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    
+    public init() {}
+    
+    public var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    HStack {
+                        Spacer()
+                        VStack(spacing: 10) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 16)
+                                    .fill(LinearGradient(colors: [.orange, .yellow], startPoint: .topLeading, endPoint: .bottomTrailing))
+                                    .frame(width: 88, height: 88)
+                                    .shadow(color: .orange.opacity(0.4), radius: 6)
+                                
+                                if let data = avatarData, let uiImg = UIImage(data: data) {
+                                    Image(uiImage: uiImg)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 80, height: 80)
+                                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                                } else {
+                                    ZStack {
+                                        Color.black.opacity(0.8)
+                                        Image(systemName: "person.crop.square.fill")
+                                            .font(.system(size: 44))
+                                            .foregroundColor(.white)
+                                    }
+                                    .frame(width: 80, height: 80)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                            }
+                            
+                            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "photo.badge.plus")
+                                    Text("更換方頭像")
+                                }
+                                .font(.caption.bold())
+                                .foregroundColor(.orange)
+                            }
+                            .onChange(of: selectedPhotoItem) { newItem in
+                                Task {
+                                    if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                                        self.avatarData = data
+                                    }
+                                }
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                } header: {
+                    Text("騎乘者個人形象 (3D 單車視角連動)")
+                }
+                
+                Section("騎士基本資料") {
+                    TextField("騎士暱稱 (例如：風櫃嘴破風手)", text: $nickname)
+                    TextField("自我介紹 (例如：永不放棄，享受爬坡！)", text: $bio)
+                    TextField("主要愛車 (例如：公路車 / Tarmac SL8)", text: $favoriteBike)
+                }
+                
+                Section {
+                    Text("💡 提示：設定的暱稱與方頭像將即時連動至「3D 全景巡航重播」中，成為您在山道地圖上的個人專屬騎乘者頭銜！")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("編輯個人檔案")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("儲存") {
+                        profileStore.update(
+                            nickname: nickname,
+                            bio: bio,
+                            avatarData: avatarData,
+                            favoriteBike: favoriteBike
+                        )
+                        dismiss()
+                    }
+                    .bold()
+                }
+            }
+            .onAppear {
+                self.nickname = profileStore.profile.nickname
+                self.bio = profileStore.profile.bio
+                self.favoriteBike = profileStore.profile.favoriteBike
+                self.avatarData = profileStore.profile.avatarData
+            }
+        }
+    }
 }

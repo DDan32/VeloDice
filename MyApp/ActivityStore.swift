@@ -48,6 +48,83 @@ public class ActivityStore: ObservableObject {
     }
     
     // MARK: - Strava-style Career All-Time Records (歷年最高、最長、最快 - 僅計入有效未刪除活動)
+
+    // MARK: - Distance Hall of Fame Best Efforts (1, 5, 10, 50, 100, 300 公里最快)
+    public var bestEfforts: [BestEffortRecord] {
+        let targets: [Double] = [1.0, 5.0, 10.0, 50.0, 100.0, 300.0]
+        let validActs = activeActivities
+        var results: [BestEffortRecord] = []
+        
+        for targetKm in targets {
+            var bestCandidate: (time: TimeInterval, speed: Double, act: SavedActivity)? = nil
+            
+            for act in validActs where act.distanceKm >= (targetKm * 0.98) {
+                let pts = act.track.points
+                if pts.count > 1 {
+                    var cumDists: [Double] = [0.0]
+                    var totalD = 0.0
+                    for k in 1..<pts.count {
+                        let d = CLLocation(latitude: pts[k-1].latitude, longitude: pts[k-1].longitude)
+                            .distance(from: CLLocation(latitude: pts[k].latitude, longitude: pts[k].longitude)) / 1000.0
+                        totalD += d
+                        cumDists.append(totalD)
+                    }
+                    
+                    var actMinTime: TimeInterval = Double.greatestFiniteMagnitude
+                    let step = max(1, pts.count / 300)
+                    var j = 0
+                    for i in stride(from: 0, to: pts.count, by: step) {
+                        while j < pts.count && (cumDists[j] - cumDists[i]) < targetKm {
+                            j += 1
+                        }
+                        if j < pts.count {
+                            let segDist = cumDists[j] - cumDists[i]
+                            if let t1 = pts[i].timestamp, let t2 = pts[j].timestamp {
+                                let dt = t2.timeIntervalSince(t1)
+                                if dt > 5.0 {
+                                    let normalizedTime = dt * (targetKm / segDist)
+                                    if normalizedTime < actMinTime {
+                                        actMinTime = normalizedTime
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if actMinTime < Double.greatestFiniteMagnitude {
+                        let spd = targetKm / (actMinTime / 3600.0)
+                        if bestCandidate == nil || actMinTime < bestCandidate!.time {
+                            bestCandidate = (actMinTime, spd, act)
+                        }
+                        continue
+                    }
+                }
+                
+                let effectiveTime = act.effectiveMovingDuration > 0 ? act.effectiveMovingDuration : act.durationSeconds
+                if effectiveTime > 0 && act.distanceKm > 0 {
+                    let avgSpd = act.distanceKm / (effectiveTime / 3600.0)
+                    let estimatedTime = targetKm / (avgSpd / 3600.0)
+                    if bestCandidate == nil || estimatedTime < bestCandidate!.time {
+                        bestCandidate = (estimatedTime, avgSpd, act)
+                    }
+                }
+            }
+            
+            if let best = bestCandidate {
+                results.append(BestEffortRecord(
+                    targetDistanceKm: targetKm,
+                    bestTimeSeconds: best.time,
+                    avgSpeedKmh: best.speed,
+                    activityTitle: best.act.title,
+                    activityDate: best.act.date,
+                    activityId: best.act.id
+                ))
+            }
+        }
+        
+        return results
+    }
+
     public var careerStats: CareerAllTimeStats {
         let validActs = activeActivities
         guard !validActs.isEmpty else {

@@ -197,28 +197,7 @@ public struct LiveHUDDashboardView: View {
                 ZStack(alignment: .bottomTrailing) {
                     Map(position: $navMapPosition) {
                         UserAnnotation {
-                            ZStack {
-                                if let heading = tracker.currentUserHeading {
-                                    Image(systemName: "location.north.fill")
-                                        .font(.system(size: 24))
-                                        .foregroundColor(.blue.opacity(0.35))
-                                        .rotationEffect(.degrees(heading))
-                                        .offset(y: -7)
-                                    
-                                    Image(systemName: "arrowtriangle.up.fill")
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.blue)
-                                        .rotationEffect(.degrees(heading))
-                                        .offset(y: -11)
-                                }
-                                Circle()
-                                    .fill(Color.white)
-                                    .frame(width: 18, height: 18)
-                                    .shadow(radius: 2)
-                                Circle()
-                                    .fill(Color.blue)
-                                    .frame(width: 13, height: 13)
-                            }
+                            HeadingConeBeamView(heading: tracker.currentUserHeading)
                         }
                         
                         // Real Planned Route Polyline
