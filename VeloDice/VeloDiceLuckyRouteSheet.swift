@@ -106,7 +106,7 @@ public struct VeloDiceLuckyRouteSheet: View {
             VStack(spacing: 4) {
                 Text("🎲 命運單車骰")
                     .font(.title3.bold())
-                Text("隨機探索附近 10 ~ 30 km 熱門單車路線")
+                Text("隨機探索距離目前位置 30 公里內熱門單車路線")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -131,7 +131,7 @@ public struct VeloDiceLuckyRouteSheet: View {
                 HStack(spacing: 4) {
                     Image(systemName: "location.fill")
                         .font(.system(size: 11))
-                    Text("距您約 \(String(format: "%.1f", route.distanceFromUserKm)) km")
+                    Text("距目前位置 \(String(format: "%.1f", route.distanceFromUserKm)) km")
                         .font(.caption.bold())
                 }
                 .foregroundColor(.orange)
@@ -289,7 +289,7 @@ public struct VeloDiceLuckyRouteSheet: View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.large)
-            Text("🎲 正在擲骰挑選 10 ~ 30 km 最佳探索路線...")
+            Text("🎲 正在擲骰挑選距離目前位置 30 km 內最佳探索路線...")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }

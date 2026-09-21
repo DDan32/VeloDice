@@ -66,6 +66,61 @@ public class VeloDiceLuckyRouteService: ObservableObject {
     @Published public var isSearchingNearby: Bool = false
     
     private let curatedCatalog: [VeloDiceLuckyRoute] = [
+        VeloDiceLuckyRoute(
+            title: "大稻埕碼頭夕陽水岸",
+            subtitle: "大稻埕碼頭貨櫃市集 · 淡水河畔微風悠遊",
+            destinationName: "大稻埕碼頭",
+            category: .riverSide,
+            estimatedDistanceKm: 6.5,
+            estimatedAscentMeters: 10.0,
+            difficulty: "輕鬆悠活 ⭐",
+            highlights: ["夕陽水岸貨櫃市集", "寬闊河濱自行車道", "咖啡甜點補給"],
+            coordinate: CLLocationCoordinate2D(latitude: 25.0566, longitude: 121.5075)
+        ),
+        VeloDiceLuckyRoute(
+            title: "美堤彩虹河濱水岸線",
+            subtitle: "基隆河左岸 · 遠眺台北101與松山機場飛機起降",
+            destinationName: "美堤河濱公園",
+            category: .riverSide,
+            estimatedDistanceKm: 8.2,
+            estimatedAscentMeters: 15.0,
+            difficulty: "平路微風 ⭐",
+            highlights: ["看飛機降落", "夜景地標101", "平整草皮景觀"],
+            coordinate: CLLocationCoordinate2D(latitude: 25.0782, longitude: 121.5540)
+        ),
+        VeloDiceLuckyRoute(
+            title: "劍南山步道眺望線",
+            subtitle: "大直美麗華摩天輪夜景 · 短坡敏捷爬升",
+            destinationName: "劍南山觀景台",
+            category: .mountainClimb,
+            estimatedDistanceKm: 7.8,
+            estimatedAscentMeters: 195.0,
+            difficulty: "短陡爬坡 ⭐⭐",
+            highlights: ["美麗華摩天輪全景", "偶像劇取景地", "短程有氧爆發"],
+            coordinate: CLLocationCoordinate2D(latitude: 25.0860, longitude: 121.5520)
+        ),
+        VeloDiceLuckyRoute(
+            title: "中和烘爐地求財之巔",
+            subtitle: "南山福德宮巨型土地公 · 陡坡熱血拉扯",
+            destinationName: "烘爐地南山福德宮",
+            category: .mountainClimb,
+            estimatedDistanceKm: 11.5,
+            estimatedAscentMeters: 280.0,
+            difficulty: "陡坡挑戰 ⭐⭐⭐",
+            highlights: ["超壯麗大台北夜景", "求財香火鼎盛", "經典爬坡計時考驗"],
+            coordinate: CLLocationCoordinate2D(latitude: 24.9702, longitude: 121.5034)
+        ),
+        VeloDiceLuckyRoute(
+            title: "八里觀音山硬漢之巔",
+            subtitle: "凌雲路蜿蜒登頂 · 俯瞰淡水河口與台北港",
+            destinationName: "觀音山遊客中心",
+            category: .mountainClimb,
+            estimatedDistanceKm: 16.5,
+            estimatedAscentMeters: 360.0,
+            difficulty: "硬漢訓練 ⭐⭐⭐",
+            highlights: ["俯瞰淡水河入海口", "連續髮夾彎", "車友打卡聖地"],
+            coordinate: CLLocationCoordinate2D(latitude: 25.1378, longitude: 121.4172)
+        ),
         // Northern Taiwan (Taipei / New Taipei / Keelung / Taoyuan)
         VeloDiceLuckyRoute(
             title: "淡水老街金色水岸",
@@ -383,7 +438,7 @@ public class VeloDiceLuckyRouteService: ObservableObject {
         )
     ]
     
-    /// 根據使用者目前座標，篩選附近 10 ~ 30 公里內的熱門路線
+    /// 根據使用者目前座標，篩選「距離目前位置 30 公里以內」的熱門路線（路線長短不限）
     public func fetchRoutesNearby(userCoordinate: CLLocationCoordinate2D?) async -> [VeloDiceLuckyRoute] {
         let center = userCoordinate ?? CLLocationCoordinate2D(latitude: 25.0330, longitude: 121.5654)
         let userLoc = CLLocation(latitude: center.latitude, longitude: center.longitude)
@@ -395,18 +450,18 @@ public class VeloDiceLuckyRouteService: ObservableObject {
             return r
         }
         
-        // 優先篩選 10 ~ 30 公里範圍內之熱門路線
-        var filtered = calculatedRoutes.filter { $0.distanceFromUserKm >= 10.0 && $0.distanceFromUserKm <= 30.0 }
+        // 嚴格篩選：距離目前位置 30 公里以內（路線本身長度不限）
+        var filtered = calculatedRoutes.filter { $0.distanceFromUserKm > 0.05 && $0.distanceFromUserKm <= 30.0 }
         
-        // 若該範圍內數量偏少，優雅擴充至 8 ~ 35 公里，確保使用者總有豐富選擇
+        // 若該範圍內數量偏少，優雅擴充至 35 公里以內，確保使用者總有豐富選擇
         if filtered.count < 3 {
-            let expanded = calculatedRoutes.filter { $0.distanceFromUserKm >= 7.0 && $0.distanceFromUserKm <= 38.0 }
+            let expanded = calculatedRoutes.filter { $0.distanceFromUserKm > 0.05 && $0.distanceFromUserKm <= 35.0 }
             if !expanded.isEmpty {
                 filtered = expanded
             }
         }
         
-        // 若依然沒有（例如在海外或離島），透過 MKLocalSearch 動態探索周邊 10-30km 景點
+        // 若依然沒有（例如在海外或離島），透過 MKLocalSearch 動態探索距離目前位置 30km 內景點
         if filtered.isEmpty {
             let dynamicFound = await searchDynamicNearbySpots(around: center)
             if !dynamicFound.isEmpty {
@@ -421,7 +476,7 @@ public class VeloDiceLuckyRouteService: ObservableObject {
         return self.availableNearbyRoutes
     }
     
-    /// 擲骰子：隨機選取一條附近 10-30km 的路線（排除目前正顯示的路線，若有其他選項）
+    /// 擲骰子：隨機選取一條距離目前位置 30km 內的路線（排除目前正顯示的路線，若有其他選項）
     @discardableResult
     public func rollDice(userCoordinate: CLLocationCoordinate2D?) async -> VeloDiceLuckyRoute? {
         self.isRolling = true
@@ -465,7 +520,7 @@ public class VeloDiceLuckyRouteService: ObservableObject {
                     let coord = item.placemark.coordinate
                     let distKm = userLoc.distance(from: CLLocation(latitude: coord.latitude, longitude: coord.longitude)) / 1000.0
                     
-                    if distKm >= 9.0 && distKm <= 32.0 {
+                    if distKm > 0.5 && distKm <= 30.0 {
                         let route = VeloDiceLuckyRoute(
                             title: "\(name) 隨機探索線",
                             subtitle: "在地熱門推薦 · 單車探索巡航",

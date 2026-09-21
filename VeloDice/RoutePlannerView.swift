@@ -249,7 +249,7 @@ public struct RoutePlannerView: View {
                 }
             }
             
-            // Floating VeloDice Lucky Route Button (主畫面骰子：隨機探索 10-30km 熱門路線)
+            // Floating VeloDice Lucky Route Button (主畫面骰子：隨機探索距離目前位置 30km 內熱門路線)
             VStack {
                 Spacer()
                 HStack {
@@ -540,7 +540,7 @@ public struct RoutePlannerView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "die.face.5.fill")
-                        Text("🎲 命運隨機路線")
+                        Text("🎲 命運隨機路線 (30km內)")
                             .font(.caption.bold())
                     }
                     .foregroundColor(.purple)
