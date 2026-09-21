@@ -4,6 +4,7 @@ import CoreLocation
 
 public struct VeloDiceLuckyRouteSheet: View {
     @ObservedObject var diceService = VeloDiceLuckyRouteService.shared
+    @ObservedObject var languageManager = AppLanguageManager.shared
     let userLocation: CLLocationCoordinate2D?
     let onConfirmRoute: (VeloDiceLuckyRoute) -> Void
     
@@ -50,13 +51,16 @@ public struct VeloDiceLuckyRouteSheet: View {
                 .padding(.vertical, 16)
             }
             .background(Color(uiColor: .systemGroupedBackground))
-            .navigationTitle("VeloDice 隨機路線")
+            .navigationTitle(L10n.VeloDice.luckyRoute)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    LanguageSwitcherView()
+                }
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("關閉") {
+                    Button(L10n.Common.close) {
                         dismiss()
                     }
                 }
@@ -104,11 +108,12 @@ public struct VeloDiceLuckyRouteSheet: View {
             .disabled(isAnimatingRoll)
             
             VStack(spacing: 4) {
-                Text("🎲 命運單車骰")
+                Text(L10n.VeloDice.rollTitle)
                     .font(.title3.bold())
-                Text("隨機探索距離目前位置 30 公里內熱門單車路線")
+                Text(L10n.VeloDice.rollSubtitle)
                     .font(.caption)
                     .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(.top, 4)
@@ -131,7 +136,7 @@ public struct VeloDiceLuckyRouteSheet: View {
                 HStack(spacing: 4) {
                     Image(systemName: "location.fill")
                         .font(.system(size: 11))
-                    Text("距目前位置 \(String(format: "%.1f", route.distanceFromUserKm)) km")
+                    Text("\(L10n.VeloDice.fromYou) \(String(format: "%.1f", route.distanceFromUserKm)) km（\(L10n.VeloDice.within30km)）")
                         .font(.caption.bold())
                 }
                 .foregroundColor(.orange)
@@ -159,7 +164,7 @@ public struct VeloDiceLuckyRouteSheet: View {
                     icon: "bicycle",
                     value: "\(String(format: "%.1f", route.estimatedDistanceKm))",
                     unit: "km",
-                    label: "預估里程",
+                    label: L10n.VeloDice.estDistance,
                     color: .blue
                 )
                 
@@ -167,15 +172,15 @@ public struct VeloDiceLuckyRouteSheet: View {
                     icon: "mountain.2.fill",
                     value: "\(Int(route.estimatedAscentMeters))",
                     unit: "m",
-                    label: "預估爬升",
+                    label: L10n.VeloDice.estAscent,
                     color: .green
                 )
                 
                 metricItem(
                     icon: "clock.fill",
                     value: "\(Int(route.estimatedDistanceKm / 19.0 * 60))",
-                    unit: "分",
-                    label: "預估騎時",
+                    unit: L10n.Common.minUnit,
+                    label: L10n.VeloDice.estTime,
                     color: .purple
                 )
                 
@@ -183,7 +188,7 @@ public struct VeloDiceLuckyRouteSheet: View {
                     icon: "gauge.medium",
                     value: route.difficulty.replacingOccurrences(of: " ⭐", with: ""),
                     unit: "",
-                    label: "路線等級",
+                    label: L10n.VeloDice.difficulty,
                     color: .orange
                 )
             }
@@ -192,7 +197,7 @@ public struct VeloDiceLuckyRouteSheet: View {
             // Highlights Tags
             if !route.highlights.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("路線特色")
+                    Text(L10n.VeloDice.highlights)
                         .font(.caption.bold())
                         .foregroundColor(.secondary)
                     
@@ -245,7 +250,7 @@ public struct VeloDiceLuckyRouteSheet: View {
             }
             
             if let user = userLocation {
-                Annotation("您目前位置", coordinate: user) {
+                Annotation(L10n.Route.currentLocation, coordinate: user) {
                     Circle()
                         .fill(Color.blue)
                         .frame(width: 14, height: 14)
@@ -289,7 +294,7 @@ public struct VeloDiceLuckyRouteSheet: View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.large)
-            Text("🎲 正在擲骰挑選距離目前位置 30 km 內最佳探索路線...")
+            Text(L10n.VeloDice.rollingToast)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
@@ -303,7 +308,7 @@ public struct VeloDiceLuckyRouteSheet: View {
             Image(systemName: "dice.fill")
                 .font(.system(size: 40))
                 .foregroundColor(.secondary)
-            Text("點擊上方骰子，隨機抽出一條驚喜路線！")
+            Text(L10n.VeloDice.rollSubtitle)
                 .font(.subheadline)
                 .foregroundColor(.secondary)
         }
@@ -329,7 +334,7 @@ public struct VeloDiceLuckyRouteSheet: View {
                 HStack(spacing: 8) {
                     Image(systemName: "location.north.line.fill")
                         .font(.headline)
-                    Text("確認導航至此路線")
+                    Text(L10n.VeloDice.confirmNavigate)
                         .font(.headline.bold())
                 }
                 .foregroundColor(.white)
@@ -357,7 +362,7 @@ public struct VeloDiceLuckyRouteSheet: View {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.subheadline.bold())
-                    Text("不喜歡？重新擲骰 🎲")
+                    Text(L10n.VeloDice.reRoll)
                         .font(.subheadline.bold())
                 }
                 .foregroundColor(.purple)

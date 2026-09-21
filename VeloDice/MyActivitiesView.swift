@@ -18,6 +18,7 @@ public struct MyActivitiesView: View {
     @State private var selectedSegmentForDetail: SegmentRecord? = nil
     @State private var showProfileSheet: Bool = false
     @ObservedObject private var profileStore = UserProfileStore.shared
+    @ObservedObject private var languageManager = AppLanguageManager.shared
     
     // Year-based Pagination
     @State private var selectedYear: Int = Calendar.current.component(.year, from: Date())
@@ -74,9 +75,9 @@ public struct MyActivitiesView: View {
                     athleteProfileBanner
                     
                     Picker("", selection: $selectedTab) {
-                        Text("過往活動").tag(0)
-                        Text("生涯榮譽榜").tag(1)
-                        Text("路段最佳 (PR)").tag(2)
+                        Text(L10n.Activities.pastRides).tag(0)
+                        Text(L10n.Activities.careerRecords).tag(1)
+                        Text(L10n.Activities.segmentPRs).tag(2)
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 16)
@@ -95,7 +96,7 @@ public struct MyActivitiesView: View {
                 
                 undoToastsOverlay
             }
-            .navigationTitle("我的運動歷程")
+            .navigationTitle(L10n.Activities.title)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button {
@@ -271,12 +272,14 @@ public struct MyActivitiesView: View {
             
             Spacer()
             
+            LanguageSwitcherView()
+            
             Button {
                 showProfileSheet = true
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "pencil")
-                    Text("編輯")
+                    Text(L10n.Activities.editProfile)
                 }
                 .font(.caption.bold())
             }
@@ -2177,6 +2180,18 @@ public struct UserProfileEditSheet: View {
                     TextField("騎士暱稱 (例如：風櫃嘴破風手)", text: $nickname)
                     TextField("自我介紹 (例如：永不放棄，享受爬坡！)", text: $bio)
                     TextField("主要愛車 (例如：公路車 / Tarmac SL8)", text: $favoriteBike)
+                }
+                
+                Section(header: Text(L10n.Common.languageSettings)) {
+                    Picker(L10n.Common.language, selection: Binding(
+                        get: { AppLanguageManager.shared.currentLanguage },
+                        set: { AppLanguageManager.shared.setLanguage($0) }
+                    )) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text("\(lang.flag) \(lang.displayName)").tag(lang)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
                 
                 Section {

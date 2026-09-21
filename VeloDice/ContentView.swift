@@ -1,11 +1,19 @@
 import SwiftUI
 
 public enum AppNavigationTab: String, CaseIterable, Identifiable {
-    case routePlanning = "地圖導航"
-    case liveHUD = "即時記錄"
-    case myActivities = "我的活動"
+    case routePlanning = "routePlanning"
+    case liveHUD = "liveHUD"
+    case myActivities = "myActivities"
     
     public var id: String { rawValue }
+    
+    public var title: String {
+        switch self {
+        case .routePlanning: return L10n.Tab.routePlanning
+        case .liveHUD: return L10n.Tab.liveHUD
+        case .myActivities: return L10n.Tab.myActivities
+        }
+    }
     
     public var icon: String {
         switch self {
@@ -17,6 +25,7 @@ public enum AppNavigationTab: String, CaseIterable, Identifiable {
 }
 
 public struct ContentView: View {
+    @ObservedObject private var languageManager = AppLanguageManager.shared
     @State private var selectedTab: AppNavigationTab = .routePlanning
     @State private var currentTrack: GPXTrack = CleanRouteHelper.shared.emptyTrack()
     
@@ -28,7 +37,7 @@ public struct ContentView: View {
         NavigationSplitView {
             List(AppNavigationTab.allCases, selection: $selectedTab) { tab in
                 NavigationLink(value: tab) {
-                    Label(tab.rawValue, systemImage: tab.icon)
+                    Label(tab.title, systemImage: tab.icon)
                         .font(.headline)
                         .padding(.vertical, 6)
                 }
@@ -36,17 +45,24 @@ public struct ContentView: View {
             .navigationTitle(AppConstants.appName)
             .listStyle(.sidebar)
             .frame(minWidth: 220)
+            .toolbar {
+                ToolbarItem {
+                    LanguageSwitcherView()
+                }
+            }
         } detail: {
             detailView(for: selectedTab)
-                .navigationTitle(selectedTab.rawValue)
+                .navigationTitle(selectedTab.title)
         }
         .frame(minWidth: 960, minHeight: 640)
+        .environment(\.locale, languageManager.locale)
+        .id(languageManager.currentLanguage)
         #else
         // iOS: Native Clean 3-Tab Bar
         TabView(selection: $selectedTab) {
             RoutePlannerView(currentTrack: $currentTrack)
                 .tabItem {
-                    Label("地圖導航", systemImage: "map.fill")
+                    Label(AppNavigationTab.routePlanning.title, systemImage: AppNavigationTab.routePlanning.icon)
                 }
                 .tag(AppNavigationTab.routePlanning)
             
@@ -56,7 +72,7 @@ public struct ContentView: View {
                 self.selectedTab = .myActivities
             }
             .tabItem {
-                Label("即時記錄", systemImage: "speedometer")
+                Label(AppNavigationTab.liveHUD.title, systemImage: AppNavigationTab.liveHUD.icon)
             }
             .tag(AppNavigationTab.liveHUD)
             
@@ -65,10 +81,12 @@ public struct ContentView: View {
                 self.selectedTab = .routePlanning
             })
             .tabItem {
-                Label("我的活動", systemImage: "figure.outdoor.cycle")
+                Label(AppNavigationTab.myActivities.title, systemImage: AppNavigationTab.myActivities.icon)
             }
             .tag(AppNavigationTab.myActivities)
         }
+        .environment(\.locale, languageManager.locale)
+        .id(languageManager.currentLanguage)
         #endif
     }
     

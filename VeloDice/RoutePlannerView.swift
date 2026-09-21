@@ -17,6 +17,7 @@ public struct RoutePlannerView: View {
     @Binding var currentTrack: GPXTrack
     
     @ObservedObject private var tracker = WorkoutTracker.shared
+    @ObservedObject private var languageManager = AppLanguageManager.shared
     @ObservedObject private var searchCompleter = LocationSearchCompleter.shared
     
     // Unified Reorderable Waypoints List (Origin -> Stops... -> Destination)
@@ -494,6 +495,9 @@ public struct RoutePlannerView: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    LanguageSwitcherView()
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
                         showStopsManagementSheet = false
@@ -1087,7 +1091,7 @@ public struct RoutePlannerView: View {
             HStack(spacing: 6) {
                 Image(systemName: "die.face.5.fill")
                     .font(.system(size: 18, weight: .bold))
-                Text("隨機路線")
+                Text(L10n.VeloDice.luckyRoute)
                     .font(.subheadline.bold())
             }
             .foregroundColor(.white)
@@ -1130,7 +1134,7 @@ public struct RoutePlannerView: View {
         HStack(spacing: 6) {
             // 1. 現在位置
             bottomDockButton(
-                title: "現在位置",
+                title: L10n.Route.myLocation,
                 icon: "location.fill",
                 tintColor: .blue
             ) {
@@ -1148,7 +1152,7 @@ public struct RoutePlannerView: View {
             
             // 2. 匯入GPX
             bottomDockButton(
-                title: "匯入GPX",
+                title: L10n.Route.importGPX,
                 icon: "square.and.arrow.down.fill",
                 tintColor: .purple
             ) {
@@ -1157,7 +1161,7 @@ public struct RoutePlannerView: View {
             
             // 3. 匯出GPX
             bottomDockButton(
-                title: "匯出GPX",
+                title: L10n.Activities.exportGPX,
                 icon: "square.and.arrow.up.fill",
                 tintColor: .indigo
             ) {
@@ -1166,7 +1170,7 @@ public struct RoutePlannerView: View {
             
             // 4. 爬升
             bottomDockButton(
-                title: "爬升",
+                title: L10n.Route.elevation,
                 icon: "mountain.2.fill",
                 tintColor: .green
             ) {
@@ -1180,7 +1184,7 @@ public struct RoutePlannerView: View {
             
             // 5. 補給站
             bottomDockButton(
-                title: "補給站",
+                title: L10n.Route.supply,
                 icon: "storefront.fill",
                 tintColor: .orange
             ) {
