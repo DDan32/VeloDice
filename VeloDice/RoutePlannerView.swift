@@ -56,6 +56,7 @@ public struct RoutePlannerView: View {
     
     // Sheet & Importer Toggles
     @State private var showStopsManagementSheet: Bool = false
+    @State private var showVeloDiceLuckySheet: Bool = false
     @State private var showElevationSheet: Bool = false
     @State private var showSupplySheet: Bool = false
     @State private var showRouteGPXImporter: Bool = false
@@ -248,6 +249,17 @@ public struct RoutePlannerView: View {
                 }
             }
             
+            // Floating VeloDice Lucky Route Button (主畫面骰子：隨機探索 10-30km 熱門路線)
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    veloDiceFloatingButton
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 68)
+                }
+            }
+            
             // Uniform 5 Bottom Action Buttons Dock (固定於底部：現在位置、匯入GPX、路線指引、爬升、補給站)
             VStack {
                 Spacer()
@@ -256,6 +268,11 @@ public struct RoutePlannerView: View {
         }
         .sheet(isPresented: $showStopsManagementSheet) {
             routeStopsManagementSheet
+        }
+        .sheet(isPresented: $showVeloDiceLuckySheet) {
+            VeloDiceLuckyRouteSheet(userLocation: tracker.currentUserLocation?.coordinate) { chosenRoute in
+                applyVeloDiceLuckyRoute(chosenRoute)
+            }
         }
         .sheet(isPresented: $showDirectionsSheet) {
             turnByTurnDirectionsSheet
@@ -514,6 +531,21 @@ public struct RoutePlannerView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(.blue)
+                
+                Spacer()
+                
+                Button {
+                    showStopsManagementSheet = false
+                    showVeloDiceLuckySheet = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "die.face.5.fill")
+                        Text("🎲 命運隨機路線")
+                            .font(.caption.bold())
+                    }
+                    .foregroundColor(.purple)
+                }
+                .buttonStyle(.plain)
                 
                 Spacer()
                 
@@ -1043,6 +1075,56 @@ public struct RoutePlannerView: View {
         }
     }
     
+    // MARK: - Floating VeloDice Lucky Route Button
+    private var veloDiceFloatingButton: some View {
+        Button {
+            #if os(iOS)
+            let generator = UIImpactFeedbackGenerator(style: .medium)
+            generator.impactOccurred()
+            #endif
+            showVeloDiceLuckySheet = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "die.face.5.fill")
+                    .font(.system(size: 18, weight: .bold))
+                Text("隨機路線")
+                    .font(.subheadline.bold())
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                LinearGradient(
+                    colors: [Color.purple, Color.indigo, Color.blue],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .clipShape(Capsule())
+            .shadow(color: Color.purple.opacity(0.45), radius: 8, x: 0, y: 4)
+            .overlay(
+                Capsule()
+                    .stroke(Color.white.opacity(0.35), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private func applyVeloDiceLuckyRoute(_ route: VeloDiceLuckyRoute) {
+        self.routeStops = [
+            NavigationWaypoint(name: "目前位置"),
+            NavigationWaypoint(name: route.destinationName)
+        ]
+        self.activeEditingStopID = nil
+        self.cleanupDuplicateStops()
+        self.calculateRealRoute()
+        
+        let distStr = String(format: "%.1f", route.estimatedDistanceKm)
+        let hlStr = route.highlights.joined(separator: " · ")
+        self.alertMessage = "🎲 VeloDice 命運路線已就緒！\n\n已為您規劃前往「\(route.title)」\n\n• 預估騎乘：\(distStr) km\n• 預估爬升：\(Int(route.estimatedAscentMeters)) m\n• 特色：\(hlStr)\n\n導航路線已載入地圖，祝您騎乘愉快！"
+        self.showAlert = true
+    }
+
     // MARK: - Uniform 5 Bottom Action Buttons (現在位置，匯入GPX，路線指引，爬升，補給站)
     private var navigationActionRow: some View {
         HStack(spacing: 6) {
