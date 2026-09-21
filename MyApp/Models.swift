@@ -1039,3 +1039,29 @@ public struct HeadingConeBeamView: View {
         }
     }
 }
+
+
+// MARK: - Navigation Stop Name Sanitizer
+public func cleanStopName(_ raw: String) -> String {
+    var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if name.hasPrefix("起點: ") {
+        name = String(name.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+    } else if name.hasPrefix("起點:") {
+        name = String(name.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+    }
+    if name.hasPrefix("終點: ") {
+        name = String(name.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+    } else if name.hasPrefix("終點:") {
+        name = String(name.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+    }
+    if let range = name.range(of: #"^停靠站\\s*\\d+:\\s*"#, options: .regularExpression) {
+        name = String(name[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+    }
+    if name.contains("➔") {
+        let parts = name.components(separatedBy: "➔")
+        if let last = parts.last?.trimmingCharacters(in: .whitespaces), !last.isEmpty {
+            name = last
+        }
+    }
+    return name
+}

@@ -167,23 +167,43 @@ public class MapRouteService: ObservableObject {
         defer { isSearching = false }
         
         var stopNames: [String] = []
-        stopNames.append(originName.isEmpty ? "目前位置" : originName)
+        let cleanOrigin = cleanStopName(originName)
+        stopNames.append(cleanOrigin.isEmpty ? "目前位置" : cleanOrigin)
         for stop in intermediateStops {
-            let trimmed = stop.trimmingCharacters(in: .whitespaces)
+            let trimmed = cleanStopName(stop)
             if !trimmed.isEmpty {
                 stopNames.append(trimmed)
             }
         }
-        stopNames.append(destinationName.isEmpty ? "目前位置" : destinationName)
+        let cleanDest = cleanStopName(destinationName)
+        if !cleanDest.isEmpty {
+            stopNames.append(cleanDest)
+        }
         
-        guard stopNames.count >= 2 else {
-            throw NSError(domain: "MapRouteService", code: 400, userInfo: [NSLocalizedDescriptionKey: "請至少提供起點與終點"])
+        // Critical Fix: Deduplicate consecutive stops!
+        var deduplicatedStopNames: [String] = []
+        for name in stopNames {
+            let isCurrent = (name == "目前位置" || name == "當前位置")
+            if let last = deduplicatedStopNames.last {
+                let lastIsCurrent = (last == "目前位置" || last == "當前位置")
+                if isCurrent && lastIsCurrent {
+                    continue // Drop duplicate consecutive "目前位置"
+                }
+                if name == last {
+                    continue // Drop duplicate consecutive identical stop
+                }
+            }
+            deduplicatedStopNames.append(name)
+        }
+        
+        guard deduplicatedStopNames.count >= 2 else {
+            throw NSError(domain: "MapRouteService", code: 400, userInfo: [NSLocalizedDescriptionKey: "請至少提供有效的起點與終點"])
         }
         
         // 2. 地理編碼每個節點取得實際 MKMapItem (支援座標字串、當前位置、景點名稱)
         var mapItems: [MKMapItem] = []
-        for name in stopNames {
-            let isCurrentLocation = name == "目前位置" || name.isEmpty || name.contains("目前位置") || name.contains("當前位置")
+        for name in deduplicatedStopNames {
+            let isCurrentLocation = (name == "目前位置" || name == "當前位置" || name.isEmpty)
             
             if isCurrentLocation {
                 let resolvedCoord = userLocation ?? WorkoutTracker.shared.currentUserLocation?.coordinate ?? CLLocationCoordinate2D(latitude: 25.0330, longitude: 121.5654)
@@ -217,6 +237,24 @@ public class MapRouteService: ObservableObject {
             mapItems.append(first)
         }
         
+        // Secondary safeguard: Ensure consecutive mapItems do not share identical coordinates (prevents MKDirections zero-distance error)
+        var uniqueMapItems: [MKMapItem] = []
+        for item in mapItems {
+            if let last = uniqueMapItems.last {
+                let d = CLLocation(latitude: last.placemark.coordinate.latitude, longitude: last.placemark.coordinate.longitude)
+                    .distance(from: CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude))
+                if d < 15.0 {
+                    // Less than 15 meters apart, practically same point - skip duplicate
+                    continue
+                }
+            }
+            uniqueMapItems.append(item)
+        }
+        
+        guard uniqueMapItems.count >= 2 else {
+            throw NSError(domain: "MapRouteService", code: 400, userInfo: [NSLocalizedDescriptionKey: "起點與終點位置過於接近，請指定不同的目的地"])
+        }
+        
         var combinedRoutePoints: [RoutePoint] = []
         var rawCoordsWithTime: [(CLLocationCoordinate2D, Date)] = []
         var waypointsList: [GPXWaypoint] = []
@@ -226,9 +264,9 @@ public class MapRouteService: ObservableObject {
         var accumulatedTimeSec: TimeInterval = 0
         var allMKRoutes: [MKRoute] = []
         
-        for i in 0..<(mapItems.count - 1) {
-            let fromItem = mapItems[i]
-            let toItem = mapItems[i + 1]
+        for i in 0..<(uniqueMapItems.count - 1) {
+            let fromItem = uniqueMapItems[i]
+            let toItem = uniqueMapItems[i + 1]
             
             var legRoute: MKRoute?
             
@@ -299,7 +337,7 @@ public class MapRouteService: ObservableObject {
             accumulatedTimeSec += legExpectedDuration
         }
         
-        if let destItem = mapItems.last {
+        if let destItem = uniqueMapItems.last {
             waypointsList.append(GPXWaypoint(
                 name: "終點: \(destItem.name ?? "終點")",
                 latitude: destItem.placemark.coordinate.latitude,

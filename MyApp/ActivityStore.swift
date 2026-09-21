@@ -18,6 +18,7 @@ public class ActivityStore: ObservableObject {
         loadActivities()
         loadSegments()
         cleanupExpiredDeletedItems()
+        refreshBestEffortsInBackground()
     }
     
     private var activitiesFileURL: URL {
@@ -49,10 +50,21 @@ public class ActivityStore: ObservableObject {
     
     // MARK: - Strava-style Career All-Time Records (歷年最高、最長、最快 - 僅計入有效未刪除活動)
 
-    // MARK: - Distance Hall of Fame Best Efforts (1, 5, 10, 50, 100, 300 公里最快)
-    public var bestEfforts: [BestEffortRecord] {
+    // MARK: - Distance Hall of Fame Best Efforts (1, 5, 10, 50, 100, 300 公里最快 - 快取與非同步計算)
+    @Published public private(set) var bestEfforts: [BestEffortRecord] = []
+    
+    public func refreshBestEffortsInBackground() {
+        let acts = self.activeActivities
+        Task.detached(priority: .utility) {
+            let computed = Self.computeBestEfforts(from: acts)
+            await MainActor.run {
+                ActivityStore.shared.bestEfforts = computed
+            }
+        }
+    }
+    
+    public nonisolated static func computeBestEfforts(from validActs: [SavedActivity]) -> [BestEffortRecord] {
         let targets: [Double] = [1.0, 5.0, 10.0, 50.0, 100.0, 300.0]
-        let validActs = activeActivities
         var results: [BestEffortRecord] = []
         
         for targetKm in targets {
@@ -182,7 +194,7 @@ public class ActivityStore: ObservableObject {
         persistActivities()
         
         // 同步更新路段的 PR 記錄
-        recalculateAllSegmentPRs()
+        // 啟動時不阻塞主線程，PR 由已儲存的快取數據直接載入
     }
     
     public func softDeleteActivity(id: UUID) {
@@ -204,12 +216,14 @@ public class ActivityStore: ObservableObject {
     public func permanentlyDeleteActivity(id: UUID) {
         activities.removeAll(where: { $0.id == id })
         persistActivities()
+        refreshBestEffortsInBackground()
         recalculateAllSegmentPRs()
     }
     
     public func emptyTrashActivities() {
         activities.removeAll(where: { $0.isDeleted })
         persistActivities()
+        refreshBestEffortsInBackground()
         recalculateAllSegmentPRs()
     }
     

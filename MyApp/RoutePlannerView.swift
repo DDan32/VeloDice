@@ -337,25 +337,29 @@ public struct RoutePlannerView: View {
                 if supplyPoints.isEmpty {
                     searchSuppliesForCurrentTrack()
                 }
+                syncStopsFromTrack()
             }
         }
         .onChange(of: currentTrack.id) { _ in
             fitMapToCurrentTrack()
             if !isCalculatingRoute {
                 searchSuppliesForCurrentTrack()
+                syncStopsFromTrack()
             }
         }
     }
     
     // MARK: - Minimal Floating Top Route Summary Bar (起點與終點精簡卡片)
     private var compactRouteSummaryBar: some View {
-        Button {
-            showStopsManagementSheet = true
-        } label: {
-            HStack(spacing: 12) {
-                // Origin & Destination Indicators
-                VStack(alignment: .leading, spacing: 5) {
-                    // Origin
+        HStack(spacing: 12) {
+            // Origin & Destination Indicators
+            VStack(alignment: .leading, spacing: 5) {
+                // Origin (tap to edit origin)
+                Button {
+                    ensureRouteStopsPopulated()
+                    activeEditingStopID = routeStops.first?.id
+                    showStopsManagementSheet = true
+                } label: {
                     HStack(spacing: 8) {
                         Circle()
                             .fill(Color.green)
@@ -365,8 +369,17 @@ public struct RoutePlannerView: View {
                             .foregroundColor(.primary)
                             .lineLimit(1)
                     }
-                    
-                    // Destination
+                }
+                .buttonStyle(.plain)
+                
+                // Destination (tap to re-enter destination directly)
+                Button {
+                    ensureRouteStopsPopulated()
+                    if let lastStop = routeStops.last {
+                        activeEditingStopID = lastStop.id
+                    }
+                    showStopsManagementSheet = true
+                } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "flag.checkered")
                             .font(.system(size: 9))
@@ -377,11 +390,17 @@ public struct RoutePlannerView: View {
                             .lineLimit(1)
                     }
                 }
-                
-                Spacer()
-                
-                // Intermediate stops count badge
-                if intermediateStopsCount > 0 {
+                .buttonStyle(.plain)
+            }
+            
+            Spacer()
+            
+            // Intermediate stops count badge
+            if intermediateStopsCount > 0 {
+                Button {
+                    ensureRouteStopsPopulated()
+                    showStopsManagementSheet = true
+                } label: {
                     Text("+\(intermediateStopsCount) 途經點")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.orange)
@@ -389,8 +408,14 @@ public struct RoutePlannerView: View {
                         .padding(.vertical, 3)
                         .background(Color.orange.opacity(0.15), in: Capsule())
                 }
-                
-                // Edit Settings Pill Icon
+                .buttonStyle(.plain)
+            }
+            
+            // Edit Settings Pill Icon
+            Button {
+                ensureRouteStopsPopulated()
+                showStopsManagementSheet = true
+            } label: {
                 if isCalculatingRoute {
                     ProgressView()
                         .controlSize(.small)
@@ -408,15 +433,15 @@ public struct RoutePlannerView: View {
                     .background(Color.blue.opacity(0.1), in: Capsule())
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.ultraThinMaterial)
-                    .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
-            )
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+        )
     }
     
     // MARK: - Route Stops Management Sheet (獨立站點與停靠點管理視窗)
@@ -540,6 +565,23 @@ public struct RoutePlannerView: View {
                     activeEditingStopID = stop.id
                 }
                 
+                // 一鍵清空按鈕，讓使用者快速重新輸入新終點
+                if !stop.name.isEmpty {
+                    Button {
+                        if let idx = routeStops.firstIndex(where: { $0.id == stop.id }) {
+                            routeStops[idx].name = ""
+                            activeEditingStopID = stop.id
+                            searchCompleter.updateQuery("")
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 2)
+                }
+                
                 // 停靠點專屬歷史選單快速帶入按鈕
                 if !searchHistory.isEmpty {
                     Menu {
@@ -619,16 +661,20 @@ public struct RoutePlannerView: View {
     
     /// 智慧帶入歷史地點：優先帶入指定停靠點或當前選中停靠點、空白停靠點、或終點
     private func applyHistoryItem(_ dest: String, toSpecificStopID: UUID? = nil) {
+        let clean = cleanStopName(dest)
+        guard !clean.isEmpty else { return }
+        
         if let targetID = toSpecificStopID ?? activeEditingStopID,
            let idx = routeStops.firstIndex(where: { $0.id == targetID }) {
-            routeStops[idx].name = dest
+            routeStops[idx].name = clean
         } else if let emptyStopIdx = routeStops.enumerated().first(where: { $0.offset > 0 && $0.element.name.trimmingCharacters(in: .whitespaces).isEmpty })?.offset {
-            routeStops[emptyStopIdx].name = dest
+            routeStops[emptyStopIdx].name = clean
         } else if let lastIdx = routeStops.indices.last {
-            routeStops[lastIdx].name = dest
+            routeStops[lastIdx].name = clean
         }
         activeEditingStopID = nil
         showStopsManagementSheet = false
+        cleanupDuplicateStops()
         calculateRealRoute()
     }
     
@@ -741,11 +787,13 @@ public struct RoutePlannerView: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(searchCompleter.suggestions, id: \.self) { suggestion in
                 Button {
+                    let clean = cleanStopName(suggestion.title)
                     if let idx = routeStops.firstIndex(where: { $0.id == stopID }) {
-                        routeStops[idx].name = suggestion.title
-                        addToHistory(suggestion.title)
+                        routeStops[idx].name = clean
+                        addToHistory(clean)
                         activeEditingStopID = nil
                         showStopsManagementSheet = false
+                        cleanupDuplicateStops()
                         calculateRealRoute()
                     }
                 } label: {
@@ -816,20 +864,104 @@ public struct RoutePlannerView: View {
         calculateRealRoute()
     }
     
+    private func cleanupDuplicateStops() {
+        guard routeStops.count > 1 else { return }
+        var deduplicated: [NavigationWaypoint] = []
+        for stop in routeStops {
+            let clean = cleanStopName(stop.name)
+            let isCurrent = (clean == "目前位置" || clean == "當前位置" || clean.isEmpty)
+            if let last = deduplicated.last {
+                let lastClean = cleanStopName(last.name)
+                let lastIsCurrent = (lastClean == "目前位置" || lastClean == "當前位置" || lastClean.isEmpty)
+                if isCurrent && lastIsCurrent {
+                    continue // 自動去除重複的「目前位置」
+                }
+                if clean == lastClean && !clean.isEmpty {
+                    continue // 去除重複相同的停靠站
+                }
+            }
+            deduplicated.append(stop)
+        }
+        if deduplicated.count >= 2 {
+            self.routeStops = deduplicated
+        }
+    }
+    
     private func ensureRouteStopsPopulated() {
         if routeStops.count < 2 {
-            let orig = currentTrack.waypoints.first?.name ?? "目前位置"
-            let dest = currentTrack.waypoints.last?.name ?? (currentTrack.title.isEmpty ? "" : currentTrack.title)
-            routeStops = [NavigationWaypoint(name: orig), NavigationWaypoint(name: dest)]
-        } else if routeStops.last?.name.trimmingCharacters(in: .whitespaces).isEmpty == true && !currentTrack.title.isEmpty && currentTrack.title != "請輸入目的地開始導航" {
-            routeStops[routeStops.count - 1].name = currentTrack.title
+            var orig = "目前位置"
+            var dest = ""
+            if !currentTrack.waypoints.isEmpty {
+                orig = cleanStopName(currentTrack.waypoints.first?.name ?? "目前位置")
+                if currentTrack.waypoints.count > 1 {
+                    dest = cleanStopName(currentTrack.waypoints.last?.name ?? "")
+                }
+            } else if currentTrack.title.contains("➔") {
+                let parts = currentTrack.title.components(separatedBy: "➔")
+                orig = cleanStopName(parts[0])
+                if parts.count > 1 {
+                    dest = cleanStopName(parts[1])
+                }
+            } else if !currentTrack.title.isEmpty && currentTrack.title != "請輸入目的地開始導航" {
+                dest = cleanStopName(currentTrack.title)
+            }
+            routeStops = [
+                NavigationWaypoint(name: orig.isEmpty ? "目前位置" : orig),
+                NavigationWaypoint(name: dest)
+            ]
+        }
+        cleanupDuplicateStops()
+    }
+    
+    private func syncStopsFromTrack() {
+        guard currentTrack.points.count > 1 else { return }
+        if currentTrack.waypoints.count >= 2 {
+            var stops: [NavigationWaypoint] = []
+            for wpt in currentTrack.waypoints {
+                let clean = cleanStopName(wpt.name)
+                if !clean.isEmpty {
+                    stops.append(NavigationWaypoint(name: clean))
+                }
+            }
+            if stops.count >= 2 {
+                self.routeStops = stops
+                cleanupDuplicateStops()
+                return
+            }
+        }
+        
+        if currentTrack.title.contains("➔") {
+            let parts = currentTrack.title.components(separatedBy: "➔")
+            let orig = cleanStopName(parts[0])
+            let dest = cleanStopName(parts.count > 1 ? parts[1] : "")
+            if !dest.isEmpty {
+                self.routeStops = [
+                    NavigationWaypoint(name: orig.isEmpty ? "目前位置" : orig),
+                    NavigationWaypoint(name: dest)
+                ]
+                cleanupDuplicateStops()
+                return
+            }
+        }
+        
+        if !currentTrack.title.isEmpty && currentTrack.title != "請輸入目的地開始導航" {
+            let cleanDest = cleanStopName(currentTrack.title)
+            if !cleanDest.isEmpty {
+                self.routeStops = [
+                    NavigationWaypoint(name: "目前位置"),
+                    NavigationWaypoint(name: cleanDest)
+                ]
+                cleanupDuplicateStops()
+            }
         }
     }
     
     private func addNewStop() {
         ensureRouteStopsPopulated()
         let insertIndex = max(1, routeStops.count - 1)
-        routeStops.insert(NavigationWaypoint(name: ""), at: insertIndex)
+        let newStop = NavigationWaypoint(name: "")
+        routeStops.insert(newStop, at: insertIndex)
+        activeEditingStopID = newStop.id
     }
     
     private func promptAddSupplyPoint(_ sp: SupplyPoint) {
@@ -1521,7 +1653,8 @@ public struct RoutePlannerView: View {
     
     // MARK: - Real Map Routing Engine with Reordered Stops
     private func calculateRealRoute() {
-        let validStops = routeStops.map(\.name).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        cleanupDuplicateStops()
+        let validStops = routeStops.map { cleanStopName($0.name) }.filter { !$0.isEmpty }
         guard validStops.count >= 2 else {
             self.currentTrack = CleanRouteHelper.shared.emptyTrack()
             self.supplyPoints = []
